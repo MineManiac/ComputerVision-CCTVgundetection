@@ -1,8 +1,6 @@
 # Roboflow Dataset Comparison
 
 **Project:** Reproducing Improved YOLOv4 for Real-Time CCTV Gun Detection  
-**Author:** Fernanda de Oliveira Pereira  
-**Date:** April 13, 2026
 
 ---
 
