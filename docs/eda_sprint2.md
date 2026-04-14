@@ -1,9 +1,6 @@
 # EDA Sprint 2 - Main Dataset
 
 **Project:** Reproducing Improved YOLOv4 for Real-Time CCTV Gun Detection  
-**Author:** Fernanda de Oliveira Pereira  
-**Date:** April 13, 2026
-
 ---
 
 ## Objective
@@ -13,8 +10,6 @@ This document summarizes a first exploratory data analysis of the main CCTV data
 ---
 
 ## Dataset Structure
-
-The extracted dataset does not follow the folder structure originally assumed in the README. Instead of separate `Cam1/`, `Cam5/`, and `Cam7/` directories, the files are stored together in a single folder:
 
 ```text
 data/cctv_mock_attack/Images/
