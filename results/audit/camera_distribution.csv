@@ -1,0 +1,4 @@
+camera_id,total_images,positive_images_after_mapping,total_boxes,total_weapon_boxes,total_excluded_boxes,total_unknown_boxes
+cam1,607,285,493,480,13,0
+cam5,1031,803,1686,1513,173,0
+cam7,3511,432,542,518,24,0

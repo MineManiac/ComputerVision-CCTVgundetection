@@ -1,0 +1,6 @@
+split,camera_id,images,positive_images,total_boxes
+train,cam1,532,248,426
+train,cam7,3151,405,511
+val,cam1,75,37,67
+val,cam7,360,27,31
+test,cam5,1031,803,1686

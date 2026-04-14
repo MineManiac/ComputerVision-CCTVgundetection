@@ -1,0 +1,21 @@
+=== MANIFEST SUMMARY ===
+Total images: 5149
+Total XML annotations: 5149
+Total manifest rows: 5149
+Total boxes: 2721
+Positive images (has_weapon=1): 1520
+Rows with invalid boxes: 0
+Orphan XMLs (missing image): 0
+
+Pair status counts:
+  ok: 5149
+
+Camera counts:
+  cam1: 607
+  cam5: 1031
+  cam7: 3511
+
+Class counts:
+  handgun: 1714
+  knife: 210
+  short_rifle: 797

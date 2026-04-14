@@ -1,0 +1,4 @@
+split,images,positive_images,total_boxes
+train,3683,653,937
+val,435,64,98
+test,1031,803,1686

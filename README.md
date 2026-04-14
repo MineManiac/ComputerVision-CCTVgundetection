@@ -1,32 +1,41 @@
-# CCTV Gun Detection - YOLOv4 Reproduction Study
+# CCTV Gun Detection - Reproduction Study
 
 **Course:** Computer Vision - Insper  
 **Team:** SafeSight Research  
 **Members:** Matheus Ribeiro Barros, Fernanda de Oliveira Pereira
 
-> Reproducing and evaluating *Fighting against terrorism: A real-time CCTV autonomous weapons detection based on improved YOLOv4* (Wang et al., DSP 2023) using public datasets, a modern YOLO comparison, and robustness analysis under adverse CCTV conditions.
+> Reproducing and evaluating CCTV weapon detection pipelines using the public mock attack dataset from Salazar-Gonzalez et al. (2020), with a paper-inspired setup and a modern YOLO11n baseline prepared in Sprint 2.
 
 ---
 
 ## Table of Contents
 
-- [Project Overview](#project-overview)
-- [Dataset Setup](#dataset-setup)
-- [Installation](#installation)
-- [Project Structure](#project-structure)
-- [Pipeline Overview](#pipeline-overview)
-- [References](#references)
+- [CCTV Gun Detection - Reproduction Study](#cctv-gun-detection---reproduction-study)
+  - [Table of Contents](#table-of-contents)
+  - [Project Overview](#project-overview)
+  - [Dataset Setup](#dataset-setup)
+    - [Dataset - Mock Attack Dataset (Salazar-Gonzalez et al., 2020)](#dataset---mock-attack-dataset-salazar-gonzalez-et-al-2020)
+    - [Option 1 - Direct download](#option-1---direct-download)
+    - [Option 2 - Hugging Face dataset page](#option-2---hugging-face-dataset-page)
+    - [Raw extracted structure](#raw-extracted-structure)
+    - [Local organized structure used by this project](#local-organized-structure-used-by-this-project)
+  - [Installation](#installation)
+  - [Project Structure](#project-structure)
+  - [Pipeline Overview](#pipeline-overview)
+  - [References](#references)
 
 ---
 
 ## Project Overview
 
-This project is a structured reproduction and stress-test study of a 2023 paper on CCTV weapon detection. It does **not** claim algorithmic novelty. The goals are:
+This project is a structured reproduction and evaluation study on CCTV weapon detection. It does **not** claim algorithmic novelty. The current workflow is based on the public CCTV mock attack dataset from Salazar-Gonzalez et al. (2020), while Sprint 2 focuses on preparing a reproducible data pipeline and a modern YOLO11n baseline.
 
-1. Reproduce the improved YOLOv4 pipeline described in the paper using public data.
-2. Compare it against a standard YOLOv4 baseline and a modern YOLO-family detector such as YOLO11.
-3. Evaluate robustness under realistic CCTV conditions such as motion blur, low light, and small object scale.
-4. Explore a two-phase detection strategy to reduce false positives.
+The current goals are:
+
+1. Organize and audit the real CCTV dataset in a reproducible way.
+2. Build train/validation/test splits aligned with the camera setup of the dataset.
+3. Prepare a YOLO-format version of the dataset using a single `weapon` class.
+4. Run a first smoke test with YOLO11n before moving to longer experiments and model comparisons.
 
 ---
 
@@ -79,62 +88,50 @@ curl.exe -L --retry 5 --retry-delay 5 `
 Expand-Archive -Path "data\weapons_images_2fps.zip" -DestinationPath "data\cctv_mock_attack"
 ```
 
-If `Invoke-WebRequest` works well in your environment, you can use it instead of `curl.exe`, but `curl.exe` is often more stable for large downloads on Windows.
-
 ### Option 2 - Hugging Face dataset page
 
 Download manually from the official dataset page:  
 https://huggingface.co/datasets/jsalazar/US-Real-time-gun-detection-in-CCTV-An-open-problem-dataset
 
-### Expected Directory Structure
+### Raw extracted structure
 
 The extracted archive stores the files in a shared `Images/` folder. Each `.jpg` frame has a matching `.xml` annotation file in the same directory, and the camera is identified by the filename prefix (`Cam1-`, `Cam5-`, `Cam7-`).
 
 ```text
-ComputerVision-CCTVgundetection/
-|-- data/
-|   |-- weapons_images_2fps.zip
-|   `-- cctv_mock_attack/
-|       `-- Images/
-|           |-- Cam1-...jpg
-|           |-- Cam1-...xml
-|           |-- Cam5-...jpg
-|           |-- Cam5-...xml
-|           |-- Cam7-...jpg
-|           `-- Cam7-...xml
-|
-|-- notebooks/
-|-- scripts/
-|-- models/
-|-- results/
-|-- cctv_gun_detection_research_proposal.md
-`-- README.md
-```
-
-You can verify the extraction with:
-
-```powershell
-Get-ChildItem data\cctv_mock_attack
-Get-ChildItem data\cctv_mock_attack\Images | Select-Object -First 10
-```
-
-Expected result:
-
-- an `Images/` directory inside `data\cctv_mock_attack`
-- paired `.jpg` and `.xml` files in that folder
-- filenames starting with `Cam1-`, `Cam5-`, or `Cam7-`
-
-> Tip: add `data/` to your `.gitignore` to avoid accidentally committing large files.
-
-```gitignore
-# .gitignore
 data/
-*.pt
-*.weights
-*.onnx
-__pycache__/
-.env
+└── cctv_mock_attack/
+    └── Images/
+        ├── Cam1-...jpg
+        ├── Cam1-...xml
+        ├── Cam5-...jpg
+        ├── Cam5-...xml
+        ├── Cam7-...jpg
+        └── Cam7-...xml
 ```
+
+### Local organized structure used by this project
+
+After extraction, the dataset is reorganized locally into separate image and annotation folders:
+
+```text
+data/
+├── raw/
+│   ├── images/
+│   └── annotations/
+├── interim/
+│   └── yolo/
+│       ├── images/
+│       │   ├── train/
+│       │   ├── val/
+│       │   └── test/
+│       └── labels/
+│           ├── train/
+│           ├── val/
+│           └── test/
+└── splits/
+```
+
+> Tip: keep `data/` in `.gitignore` to avoid committing large local files.
 
 ---
 
@@ -147,40 +144,76 @@ cd ComputerVision-CCTVgundetection
 
 # Create a virtual environment
 python -m venv .venv
-source .venv/bin/activate        # Linux/macOS
-.\.venv\Scripts\activate         # Windows PowerShell
+```
 
-# Install dependencies
+Activate the environment:
+
+```bash
+# Linux/macOS
+source .venv/bin/activate
+```
+
+```powershell
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+```
+
+Install dependencies:
+
+```bash
 pip install -r requirements.txt
 ```
 
-Key dependencies:
+Current key dependencies:
 
 | Package | Purpose |
 |--------|---------|
-| `torch` / `torchvision` | Deep learning backend |
-| `ultralytics` | YOLO11 / modern YOLO baseline |
-| `opencv-python` | Image preprocessing and analysis |
-| `albumentations` | Data augmentation |
-| `numpy`, `pandas` | Data manipulation |
-| `matplotlib`, `seaborn` | Visualization |
+| `pandas` | Manifest, split summaries, audit tables |
+| `matplotlib` | Plots and analysis |
+| `pillow` | Image utilities |
+| `pyyaml` | Dataset configuration files |
+| `opencv-python` | Image processing utilities |
+| `ultralytics` | YOLO11n training and inference |
 
 ---
+
 
 ## Project Structure
 
 ```text
 ComputerVision-CCTVgundetection/
-|-- data/                   # Dataset (not committed)
-|-- docs/                   # Planning notes, reviews, EDA summaries
-|-- notebooks/              # Exploratory notebooks
-|-- scripts/                # Data prep, training, evaluation scripts
-|-- models/                 # Trained models and configs
-|-- results/                # Metrics, plots, examples
-|-- cctv_gun_detection_research_proposal.md
-|-- sprint1.md
-|-- sprint_planning.md
-`-- README.md
+├── configs/
+│   └── yolo_data.yaml
+├── data/                        # Local dataset only, not committed
+│   ├── raw/
+│   │   ├── images/
+│   │   └── annotations/
+│   ├── interim/
+│   │   ├── manifest.csv
+│   │   └── yolo/
+│   │       ├── images/
+│   │       └── labels/
+│   └── splits/
+│       ├── train.txt
+│       ├── val.txt
+│       ├── test.txt
+│       ├── train_manifest.csv
+│       ├── val_manifest.csv
+│       └── test_manifest.csv
+├── docs/                        # Sprint notes and summaries
+├── results/
+│   ├── audit/
+│   └── split_stats/
+├── runs/                        # YOLO training outputs
+├── scripts/
+│   ├── reorganize_raw_dataset.py
+│   ├── build_manifest.py
+│   ├── audit_annotations.py
+│   ├── make_splits.py
+│   ├── voc_to_yolo.py
+│   └── train_yolo_smoke.py
+├── requirements.txt
+└── README.md
 ```
 
 ---
@@ -188,14 +221,15 @@ ComputerVision-CCTVgundetection/
 ## Pipeline Overview
 
 ```text
-[CCTV Images / Frames]
-    -> [Data Cleaning + Annotation Verification]
-    -> [Classical Preprocessing: Blur / Brightness / Size Analysis]
-    -> [Phase 1: Carry-Object Screening]
-    -> [Phase 2: Weapon vs Non-Weapon Classification]
-    -> [YOLOv4 Baseline | Improved YOLOv4 | Modern YOLO]
-    -> [Quantitative Evaluation + Failure Analysis]
-    -> [Medium Article + YouTube Video + Final Report]
+[Downloaded CCTV zip]
+    -> [Extract raw Images/ folder]
+    -> [Reorganize into raw/images + raw/annotations]
+    -> [Build manifest]
+    -> [Annotation audit + class remapping]
+    -> [Grouped camera-aware train/val/test split]
+    -> [VOC to YOLO conversion]
+    -> [YOLO11n smoke test]
+    -> [Longer training, comparisons, and robustness analysis]
 ```
 
 ---
@@ -203,9 +237,9 @@ ComputerVision-CCTVgundetection/
 ## References
 
 1. Salazar Gonzalez, J. L., Zaccaro, C., Alvarez-Garcia, J. A., Soria-Morillo, L. M., and Sancho Caparrini, F. (2020). *Real-time gun detection in CCTV: An open problem.* Neural Networks. https://doi.org/10.1016/j.neunet.2020.09.013
-2. Wang, G. et al. (2023). *Fighting against terrorism: A real-time CCTV autonomous weapons detection based on improved YOLO v4.* Digital Signal Processing.
-3. Bochkovskiy, A. et al. (2020). *YOLOv4: Optimal Speed and Accuracy of Object Detection.* arXiv:2004.10934.
-4. Ultralytics. *YOLO Documentation.* https://docs.ultralytics.com
+2. Ultralytics. *YOLO Documentation.* https://docs.ultralytics.com
+3. Wang, G. et al. (2023). *Fighting against terrorism: A real-time CCTV autonomous weapons detection based on improved YOLO v4.* Digital Signal Processing.
+4. Bochkovskiy, A. et al. (2020). *YOLOv4: Optimal Speed and Accuracy of Object Detection.* arXiv:2004.10934.
 
 ---
 

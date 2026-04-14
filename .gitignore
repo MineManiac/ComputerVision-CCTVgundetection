@@ -1,0 +1,50 @@
+# dataset
+data/
+datasets/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# virtual environments
+.venv/
+venv/
+env/
+
+# training outputs
+runs/
+outputs/
+wandb/
+checkpoints/
+*.pt
+*.pth
+*.onnx
+*.weights
+
+# logs
+*.log
+
+# pytest / coverage / tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# notebook / temp
+*.tmp
+*.temp
+
+# packaging / python env metadata
+.python-version
+
+# ultralytics / generic cache
+*.cache
+
+# editor / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
