@@ -1,0 +1,36 @@
+paths:
+  splits_dir: data/splits
+  raw_images_dir: data/raw/images
+  raw_annotations_dir: data/raw/annotations
+  two_phase_root: data/interim/two_phase
+  carry_runs_dir: runs/two_phase/carry_classifier
+  predictions_dir: runs/two_phase/predictions
+  evaluation_dir: runs/two_phase/evaluation
+
+models:
+  person_detector: yolo11n.pt
+  weapon_detector: runs/weapon_detector/weights/best.pt
+
+thresholds:
+  person_conf: 0.25
+  person_iou: 0.45
+  weapon_conf: 0.25
+  weapon_iou: 0.45
+  evaluation_iou: 0.50
+  image_level_nms_iou: 0.50
+
+dataset:
+  crop_padding: 0.10
+  max_negatives_per_image: 2
+  classifier_image_size: 224
+
+training:
+  batch_size: 32
+  epochs: 12
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  num_workers: 0
+  seed: 42
+
+inference:
+  default_device: cpu

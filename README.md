@@ -4,7 +4,7 @@
 **Team:** SafeSight Research  
 **Members:** Matheus Ribeiro Barros, Fernanda de Oliveira Pereira
 
-> Reproducing and evaluating CCTV weapon detection pipelines using the public mock attack dataset from Salazar-Gonzalez et al. (2020), with a paper-inspired setup and a modern YOLO11n baseline prepared in Sprint 2.
+> Reproducing and evaluating CCTV weapon detection pipelines using the public mock attack dataset from Salazar-Gonzalez et al. (2020), with a reproducible data pipeline, modern YOLO baselines, and a Sprint 4 two-phase extension.
 
 ---
 
@@ -22,20 +22,26 @@
   - [Installation](#installation)
   - [Project Structure](#project-structure)
   - [Pipeline Overview](#pipeline-overview)
+  - [Sprint 4 Workflow](#sprint-4-workflow)
   - [References](#references)
 
 ---
 
 ## Project Overview
 
-This project is a structured reproduction and evaluation study on CCTV weapon detection. It does **not** claim algorithmic novelty. The current workflow is based on the public CCTV mock attack dataset from Salazar-Gonzalez et al. (2020), while Sprint 2 focuses on preparing a reproducible data pipeline and a modern YOLO11n baseline.
+This project is a structured reproduction and evaluation study on CCTV weapon detection. It does **not** claim algorithmic novelty. The repository currently contains:
+
+- the Sprint 2 data-preparation pipeline
+- the Sprint 3 single-stage YOLO comparison artifacts
+- the Sprint 4 two-phase pipeline scripts for person screening plus final weapon detection
 
 The current goals are:
 
 1. Organize and audit the real CCTV dataset in a reproducible way.
 2. Build train/validation/test splits aligned with the camera setup of the dataset.
 3. Prepare a YOLO-format version of the dataset using a single `weapon` class.
-4. Run a first smoke test with YOLO11n before moving to longer experiments and model comparisons.
+4. Compare modern YOLO baselines under a fixed local protocol.
+5. Evaluate a two-phase pipeline that filters person crops before final weapon detection.
 
 ---
 
@@ -62,29 +68,19 @@ This is the real CCTV dataset used in this project. It was collected during a mo
 ### Option 1 - Direct download
 
 ```bash
-# Create the local data directory
 mkdir -p data
-
-# Download the zip (~2 GB) directly from Hugging Face
 curl -L -o data/weapons_images_2fps.zip \
   "https://huggingface.co/datasets/jsalazar/US-Real-time-gun-detection-in-CCTV-An-open-problem-dataset/resolve/main/weapons_images_2fps.zip"
-
-# Extract into data/
 cd data && unzip weapons_images_2fps.zip -d cctv_mock_attack && cd ..
 ```
 
 On **Windows PowerShell**:
 
 ```powershell
-# Create the local data directory
 New-Item -ItemType Directory -Force data
-
-# Download
 curl.exe -L --retry 5 --retry-delay 5 `
   "https://huggingface.co/datasets/jsalazar/US-Real-time-gun-detection-in-CCTV-An-open-problem-dataset/resolve/main/weapons_images_2fps.zip" `
   -o "data\weapons_images_2fps.zip"
-
-# Extract
 Expand-Archive -Path "data\weapons_images_2fps.zip" -DestinationPath "data\cctv_mock_attack"
 ```
 
@@ -119,16 +115,17 @@ data/
 │   ├── images/
 │   └── annotations/
 ├── interim/
-│   └── yolo/
-│       ├── images/
-│       │   ├── train/
-│       │   ├── val/
-│       │   └── test/
-│       └── labels/
-│           ├── train/
-│           ├── val/
-│           └── test/
+│   ├── manifest.csv
+│   ├── yolo/
+│   │   ├── images/
+│   │   └── labels/
+│   └── two_phase/
+│       ├── crops/
+│       └── metadata/
 └── splits/
+    ├── train_manifest.csv
+    ├── val_manifest.csv
+    └── test_manifest.csv
 ```
 
 > Tip: keep `data/` in `.gitignore` to avoid committing large local files.
@@ -138,23 +135,18 @@ data/
 ## Installation
 
 ```bash
-# Clone this repository
 git clone https://github.com/<your-org>/ComputerVision-CCTVgundetection.git
 cd ComputerVision-CCTVgundetection
-
-# Create a virtual environment
 python -m venv .venv
 ```
 
 Activate the environment:
 
 ```bash
-# Linux/macOS
 source .venv/bin/activate
 ```
 
 ```powershell
-# Windows PowerShell
 .\.venv\Scripts\Activate.ps1
 ```
 
@@ -168,51 +160,44 @@ Current key dependencies:
 
 | Package | Purpose |
 |--------|---------|
-| `pandas` | Manifest, split summaries, audit tables |
-| `matplotlib` | Plots and analysis |
-| `pillow` | Image utilities |
-| `pyyaml` | Dataset configuration files |
-| `opencv-python` | Image processing utilities |
-| `ultralytics` | YOLO11n training and inference |
+| `pandas` | Manifests, split summaries, evaluation tables |
+| `matplotlib` | Analysis plots |
+| `pillow` | Image loading and crop generation |
+| `pyyaml` | Config files |
+| `torch` | Sprint 4 carry/no_carry classifier |
+| `torchvision` | Transforms and image utilities |
+| `ultralytics` | YOLO training and inference |
 
 ---
-
 
 ## Project Structure
 
 ```text
 ComputerVision-CCTVgundetection/
 ├── configs/
-│   └── yolo_data.yaml
+│   ├── yolo_data.yaml
+│   └── two_phase.yaml
 ├── data/                        # Local dataset only, not committed
 │   ├── raw/
-│   │   ├── images/
-│   │   └── annotations/
 │   ├── interim/
-│   │   ├── manifest.csv
-│   │   └── yolo/
-│   │       ├── images/
-│   │       └── labels/
 │   └── splits/
-│       ├── train.txt
-│       ├── val.txt
-│       ├── test.txt
-│       ├── train_manifest.csv
-│       ├── val_manifest.csv
-│       └── test_manifest.csv
-├── docs/                        # Sprint notes and summaries
+├── docs/
+│   ├── sprint3_results_summary.md
+│   └── sprint4_two_phase_protocol.md
 ├── results/
 │   ├── audit/
 │   └── split_stats/
-├── runs/                        # YOLO training outputs
 ├── scripts/
-│   ├── reorganize_raw_dataset.py
 │   ├── build_manifest.py
 │   ├── audit_annotations.py
 │   ├── make_splits.py
 │   ├── voc_to_yolo.py
-│   └── train_yolo_smoke.py
-├── requirements.txt
+│   ├── train_yolo_smoke.py
+│   ├── two_phase_utils.py
+│   ├── build_two_phase_dataset.py
+│   ├── train_carry_classifier.py
+│   ├── run_two_phase_inference.py
+│   └── evaluate_detection_pipeline.py
 └── README.md
 ```
 
@@ -228,9 +213,56 @@ ComputerVision-CCTVgundetection/
     -> [Annotation audit + class remapping]
     -> [Grouped camera-aware train/val/test split]
     -> [VOC to YOLO conversion]
-    -> [YOLO11n smoke test]
-    -> [Longer training, comparisons, and robustness analysis]
+    -> [Sprint 3 single-stage YOLO comparison]
+    -> [Sprint 4 person detection]
+    -> [Sprint 4 carry/no_carry screening]
+    -> [Sprint 4 weapon detection on approved crops]
+    -> [Single-stage vs two-phase evaluation]
 ```
+
+---
+
+## Sprint 4 Workflow
+
+The Sprint 4 pipeline is prepared to run once the required checkpoints are available.
+
+### 1. Build the person-crop dataset
+
+```bash
+python scripts/build_two_phase_dataset.py --device 0
+```
+
+### 2. Train the Stage 1 carry/no_carry classifier
+
+```bash
+python scripts/train_carry_classifier.py --device 0
+```
+
+### 3. Run two-phase inference
+
+```bash
+python scripts/run_two_phase_inference.py \
+  --split test \
+  --device 0 \
+  --weapon-model runs/<your-yolo26n-checkpoint>/weights/best.pt
+```
+
+### 4. Compare single-stage vs two-phase
+
+```bash
+python scripts/evaluate_detection_pipeline.py \
+  --split test \
+  --device 0 \
+  --single-stage-model runs/<your-yolo26n-checkpoint>/weights/best.pt \
+  --two-phase-predictions runs/two_phase/predictions/test_predictions.csv \
+  --two-phase-image-summary runs/two_phase/predictions/test_image_summary.csv
+```
+
+Important notes:
+
+- `yolo11n.pt` is the default person detector for Stage 0.
+- The Sprint 3 `YOLO26n` checkpoint is **not** versioned in the repository, so pass it explicitly with `--weapon-model` or update `configs/two_phase.yaml`.
+- The detailed protocol is documented in `docs/sprint4_two_phase_protocol.md`.
 
 ---
 
