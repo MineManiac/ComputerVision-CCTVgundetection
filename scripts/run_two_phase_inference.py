@@ -36,7 +36,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=None, help="Path to configs/two_phase.yaml.")
     parser.add_argument("--person-model", default=None, help="Override person detector model or weights path.")
     parser.add_argument("--weapon-model", type=Path, default=None, help="Path to the Sprint 3 YOLO26n checkpoint.")
-    parser.add_argument("--carry-checkpoint", type=Path, default=None, help="Path to carry classifier checkpoint.")
+    parser.add_argument("--hold-checkpoint", "--carry-checkpoint", dest="hold_checkpoint", type=Path, default=None, help="Path to the hold/no_hold classifier checkpoint.")
+    parser.add_argument("--hold-threshold", type=float, default=None, help="Override the hold/no_hold gate threshold saved in the checkpoint.")
     parser.add_argument("--device", default=None, help="Inference device, for example cpu, 0, or cuda:0.")
     parser.add_argument("--max-images", type=int, default=None, help="Optional cap for smoke tests.")
     parser.add_argument("--output-prefix", default=None, help="Optional prefix for saved output filenames.")
@@ -57,7 +58,7 @@ def resolve_manifest(args: argparse.Namespace, root: Path) -> tuple[str, pd.Data
     return manifest_path.stem, pd.read_csv(manifest_path)
 
 
-def predict_carry_probability(
+def predict_hold_probability(
     model: CarryClassifierNet,
     transform: Any,
     crop_image,
@@ -67,6 +68,16 @@ def predict_carry_probability(
     with torch.no_grad():
         logits = model(tensor)
         return float(torch.sigmoid(logits).item())
+
+
+def resolve_hold_threshold(checkpoint: dict[str, Any], manual_override: float | None) -> tuple[float, str]:
+    if manual_override is not None:
+        return float(manual_override), "manual_override"
+    if "stage1_gate_threshold" in checkpoint:
+        return float(checkpoint["stage1_gate_threshold"]), "checkpoint_stage1_gate_threshold"
+    if "best_threshold" in checkpoint:
+        return float(checkpoint["best_threshold"]), "checkpoint_best_threshold"
+    return 0.50, "default_fallback"
 
 
 def main() -> None:
@@ -84,29 +95,29 @@ def main() -> None:
     torch_device = normalize_torch_device(yolo_device)
     person_model_name = args.person_model or config["models"]["person_detector"]
     weapon_model_path = args.weapon_model or resolve_path(root, config["models"]["weapon_detector"])
-    carry_checkpoint_path = args.carry_checkpoint or resolve_path(root, config["paths"]["carry_runs_dir"]) / "best.pt"
+    hold_checkpoint_path = args.hold_checkpoint or resolve_path(root, config["paths"]["carry_runs_dir"]) / "best.pt"
 
     if not Path(weapon_model_path).exists():
         raise FileNotFoundError(
             f"Missing weapon detector checkpoint: {weapon_model_path}. "
             "Pass --weapon-model with the Sprint 3 YOLO26n best.pt path."
         )
-    if not Path(carry_checkpoint_path).exists():
+    if not Path(hold_checkpoint_path).exists():
         raise FileNotFoundError(
-            f"Missing carry classifier checkpoint: {carry_checkpoint_path}. "
-            "Run train_carry_classifier.py first or pass --carry-checkpoint."
+            f"Missing hold/no_hold classifier checkpoint: {hold_checkpoint_path}. "
+            "Run train_carry_classifier.py first or pass --hold-checkpoint."
         )
 
     person_model = YOLO(person_model_name)
     weapon_model = YOLO(str(weapon_model_path))
 
-    checkpoint = torch.load(carry_checkpoint_path, map_location=torch_device)
+    checkpoint = torch.load(hold_checkpoint_path, map_location=torch_device)
     image_size = int(checkpoint.get("image_size", config["dataset"]["classifier_image_size"]))
-    carry_threshold = float(checkpoint.get("best_threshold", 0.5))
-    carry_model = CarryClassifierNet(image_size=image_size).to(torch_device)
-    carry_model.load_state_dict(checkpoint["model_state_dict"])
-    carry_model.eval()
-    carry_transform = build_classifier_transform(image_size)
+    hold_threshold, threshold_source = resolve_hold_threshold(checkpoint, manual_override=args.hold_threshold)
+    hold_model = CarryClassifierNet(image_size=image_size).to(torch_device)
+    hold_model.load_state_dict(checkpoint["model_state_dict"])
+    hold_model.eval()
+    hold_transform = build_classifier_transform(image_size)
 
     output_prefix = args.output_prefix or split_name
     prediction_rows: list[dict[str, object]] = []
@@ -161,8 +172,8 @@ def main() -> None:
                 padding_fraction=float(config["dataset"]["crop_padding"]),
             )
             crop = image.crop((crop_xmin, crop_ymin, crop_xmax, crop_ymax))
-            carry_prob = predict_carry_probability(carry_model, carry_transform, crop, torch_device)
-            if carry_prob < carry_threshold:
+            hold_prob = predict_hold_probability(hold_model, hold_transform, crop, torch_device)
+            if hold_prob < hold_threshold:
                 stage1_rejected += 1
                 continue
 
@@ -188,7 +199,8 @@ def main() -> None:
                         "person_index": person_idx,
                         "weapon_index": weapon_idx,
                         "person_confidence": round(float(person_box["confidence"]), 6),
-                        "carry_probability": round(carry_prob, 6),
+                        "hold_probability": round(hold_prob, 6),
+                        "carry_probability": round(hold_prob, 6),
                         "weapon_confidence": round(float(weapon_box["confidence"]), 6),
                         "xmin": round(global_xmin, 3),
                         "ymin": round(global_ymin, 3),
@@ -221,6 +233,7 @@ def main() -> None:
                 "image_path": row["image_path"],
                 "stage0_image_miss": stage0_image_miss,
                 "persons_detected": len(person_boxes),
+                "persons_rejected_by_hold_gate": stage1_rejected,
                 "persons_filtered_out": stage1_rejected,
                 "persons_passed_stage2": stage2_passed,
                 "final_weapon_detections": len(per_image_predictions),
@@ -237,6 +250,7 @@ def main() -> None:
                 "person_index",
                 "weapon_index",
                 "person_confidence",
+                "hold_probability",
                 "carry_probability",
                 "weapon_confidence",
                 "xmin",
@@ -252,11 +266,14 @@ def main() -> None:
                 "split": split_name,
                 "images_processed": aggregate["images_processed"],
                 "persons_detected": aggregate["persons_detected"],
+                "persons_rejected_by_hold_gate": aggregate["persons_filtered_out"],
                 "persons_filtered_out": aggregate["persons_filtered_out"],
                 "persons_passed_stage2": aggregate["persons_passed_stage2"],
                 "final_weapon_detections": aggregate["final_weapon_detections"],
                 "stage0_miss_images": aggregate["stage0_miss_images"],
-                "carry_threshold": carry_threshold,
+                "hold_threshold": hold_threshold,
+                "carry_threshold": hold_threshold,
+                "threshold_source": threshold_source,
             }
         ]
     )
@@ -272,6 +289,7 @@ def main() -> None:
     print(f"[OK] Saved predictions: {predictions_path}")
     print(f"[OK] Saved image summary: {image_summary_path}")
     print(f"[OK] Saved pipeline summary: {pipeline_summary_path}")
+    print(f"[OK] Hold threshold used: {hold_threshold:.2f} ({threshold_source})")
 
 
 if __name__ == "__main__":

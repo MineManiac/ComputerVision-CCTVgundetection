@@ -164,7 +164,7 @@ Current key dependencies:
 | `matplotlib` | Analysis plots |
 | `pillow` | Image loading and crop generation |
 | `pyyaml` | Config files |
-| `torch` | Sprint 4 carry/no_carry classifier |
+| `torch` | Sprint 4 hold/no_hold classifier |
 | `torchvision` | Transforms and image utilities |
 | `ultralytics` | YOLO training and inference |
 
@@ -215,7 +215,7 @@ ComputerVision-CCTVgundetection/
     -> [VOC to YOLO conversion]
     -> [Sprint 3 single-stage YOLO comparison]
     -> [Sprint 4 person detection]
-    -> [Sprint 4 carry/no_carry screening]
+    -> [Sprint 4 hold/no_hold screening]
     -> [Sprint 4 weapon detection on approved crops]
     -> [Single-stage vs two-phase evaluation]
 ```
@@ -232,7 +232,7 @@ The Sprint 4 pipeline is prepared to run once the required checkpoints are avail
 python scripts/build_two_phase_dataset.py --device 0
 ```
 
-### 2. Train the Stage 1 carry/no_carry classifier
+### 2. Train the Stage 1 hold/no_hold classifier
 
 ```bash
 python scripts/train_carry_classifier.py --device 0

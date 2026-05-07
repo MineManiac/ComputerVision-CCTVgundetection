@@ -25,7 +25,7 @@ from two_phase_utils import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build person crops for the Sprint 4 two-phase pipeline.")
+    parser = argparse.ArgumentParser(description="Build person crops for the Sprint 4 hold/no_hold screening stage.")
     parser.add_argument("--config", type=Path, default=None, help="Path to configs/two_phase.yaml.")
     parser.add_argument("--splits", nargs="+", default=["train", "val", "test"], choices=["train", "val", "test"])
     parser.add_argument("--person-model", default=None, help="Override person detector model or weights path.")
@@ -83,8 +83,8 @@ def main() -> None:
         if args.max_images_per_split is not None:
             split_df = split_df.head(args.max_images_per_split).copy()
 
-        ensure_dir(crops_root / split_name / "carry")
-        ensure_dir(crops_root / split_name / "no_carry")
+        ensure_dir(crops_root / split_name / "hold")
+        ensure_dir(crops_root / split_name / "no_hold")
 
         crop_rows: list[dict[str, object]] = []
         stage0_miss_rows: list[dict[str, object]] = []
@@ -153,7 +153,8 @@ def main() -> None:
 
             for det_idx in kept_indices:
                 det_box = detections[det_idx]
-                label = "carry" if det_idx in positive_indices else "no_carry"
+                label = "hold" if det_idx in positive_indices else "no_hold"
+                legacy_label = "carry" if label == "hold" else "no_carry"
                 crop_xmin, crop_ymin, crop_xmax, crop_ymax = expand_box(
                     det_box["xmin"],
                     det_box["ymin"],
@@ -178,7 +179,8 @@ def main() -> None:
                         "crop_filename": crop_filename,
                         "crop_path": path_for_csv(crop_output_path),
                         "label": label,
-                        "label_id": 1 if label == "carry" else 0,
+                        "label_id": 1 if label == "hold" else 0,
+                        "legacy_label": legacy_label,
                         "person_confidence": round(float(det_box["confidence"]), 6),
                         "person_xmin": round(float(det_box["xmin"]), 3),
                         "person_ymin": round(float(det_box["ymin"]), 3),
@@ -206,6 +208,7 @@ def main() -> None:
                 "crop_path",
                 "label",
                 "label_id",
+                "legacy_label",
                 "person_confidence",
                 "person_xmin",
                 "person_ymin",
@@ -240,8 +243,10 @@ def main() -> None:
                 "images_with_weapon": counters["images_with_weapon"],
                 "gt_weapon_boxes": counters["gt_weapon_boxes"],
                 "person_detections": counters["person_detections"],
-                "carry_crops": counters["carry_crops"],
-                "no_carry_crops": counters["no_carry_crops"],
+                "hold_crops": counters["hold_crops"],
+                "no_hold_crops": counters["no_hold_crops"],
+                "carry_crops": counters["hold_crops"],
+                "no_carry_crops": counters["no_hold_crops"],
                 "stage0_miss_images": counters["stage0_miss_images"],
                 "stage0_missed_weapon_boxes": counters["stage0_missed_weapon_boxes"],
             }
@@ -250,8 +255,8 @@ def main() -> None:
         print(
             f"[OK] {split_name}: "
             f"images={counters['images_processed']} "
-            f"carry_crops={counters['carry_crops']} "
-            f"no_carry_crops={counters['no_carry_crops']} "
+            f"hold_crops={counters['hold_crops']} "
+            f"no_hold_crops={counters['no_hold_crops']} "
             f"stage0_miss_images={counters['stage0_miss_images']}"
         )
 
@@ -266,8 +271,8 @@ def main() -> None:
         f.write(summary_df.to_markdown(index=False))
         f.write("\n\n")
         f.write("## Labeling rule\n\n")
-        f.write("- `carry`: the center of at least one ground-truth `weapon` box falls inside a detected person box.\n")
-        f.write("- `no_carry`: detected person box with no ground-truth `weapon` center inside it.\n")
+        f.write("- `hold`: the center of at least one ground-truth `weapon` box falls inside a detected person box.\n")
+        f.write("- `no_hold`: detected person box with no ground-truth `weapon` center inside it.\n")
         f.write("- `knife` is ignored exactly as in Sprint 3.\n")
 
     print(f"[OK] Saved: {summary_csv_path}")

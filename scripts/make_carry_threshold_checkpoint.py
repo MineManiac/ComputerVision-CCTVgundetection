@@ -11,9 +11,15 @@ def load_checkpoint(path: Path):
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Write a new hold/no_hold threshold into an existing checkpoint.")
     parser.add_argument("--base", default="runs/two_phase/carry_classifier/best.pt")
     parser.add_argument("--threshold", type=float, required=True)
+    parser.add_argument(
+        "--field",
+        default="stage1_gate_threshold",
+        choices=["best_f1_threshold", "stage1_gate_threshold"],
+        help="Which threshold field to overwrite in the checkpoint.",
+    )
     args = parser.parse_args()
 
     base_path = Path(args.base)
@@ -21,13 +27,19 @@ def main():
         raise FileNotFoundError(f"Checkpoint not found: {base_path}")
 
     checkpoint = load_checkpoint(base_path)
-    checkpoint["best_threshold"] = float(args.threshold)
+    threshold_value = float(args.threshold)
+    checkpoint[args.field] = threshold_value
+    if args.field == "stage1_gate_threshold":
+        checkpoint["best_threshold"] = threshold_value
+        checkpoint["threshold_policy"] = "manual_override"
 
-    out_path = base_path.parent / f"best_thr{int(args.threshold * 100):03d}.pt"
+    out_path = base_path.parent / f"best_{args.field}_thr{int(args.threshold * 100):03d}.pt"
     torch.save(checkpoint, out_path)
 
     print(f"Saved: {out_path}")
-    print(f"New best_threshold: {checkpoint['best_threshold']}")
+    print(f"Updated {args.field}: {checkpoint[args.field]}")
+    if "best_threshold" in checkpoint:
+        print(f"Compatibility best_threshold: {checkpoint['best_threshold']}")
 
 
 if __name__ == "__main__":

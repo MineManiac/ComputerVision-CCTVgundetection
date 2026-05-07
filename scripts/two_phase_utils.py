@@ -51,7 +51,7 @@ DEFAULT_TWO_PHASE_CONFIG: dict[str, Any] = {
         "image_level_nms_iou": 0.50,
     },
     "dataset": {
-        "crop_padding": 0.10,
+        "crop_padding": 0.20,
         "max_negatives_per_image": 2,
         "classifier_image_size": 224,
     },
@@ -62,6 +62,7 @@ DEFAULT_TWO_PHASE_CONFIG: dict[str, Any] = {
         "weight_decay": 0.0001,
         "num_workers": 0,
         "seed": 42,
+        "threshold_recall_floor": 0.70,
     },
     "inference": {
         "default_device": "cpu",
@@ -350,3 +351,16 @@ def save_rows_to_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def threshold_range(
+    start: float = 0.05,
+    stop: float = 0.95,
+    step: float = 0.01,
+) -> list[float]:
+    values = []
+    current = start
+    while current <= stop + 1e-9:
+        values.append(round(current, 2))
+        current += step
+    return values

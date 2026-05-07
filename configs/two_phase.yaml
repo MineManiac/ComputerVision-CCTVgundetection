@@ -20,7 +20,7 @@ thresholds:
   image_level_nms_iou: 0.50
 
 dataset:
-  crop_padding: 0.10
+  crop_padding: 0.20
   max_negatives_per_image: 2
   classifier_image_size: 224
 
@@ -31,6 +31,7 @@ training:
   weight_decay: 0.0001
   num_workers: 0
   seed: 42
+  threshold_recall_floor: 0.70
 
 inference:
   default_device: cpu
