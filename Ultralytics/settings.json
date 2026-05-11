@@ -1,0 +1,21 @@
+{
+  "settings_version": "0.0.6",
+  "datasets_dir": "C:\\Users\\mathe\\OneDrive\\Documents\\Documents\\2026.1\\cvproject\\datasets",
+  "weights_dir": "C:\\Users\\mathe\\OneDrive\\Documents\\Documents\\2026.1\\cvproject\\ComputerVision-CCTVgundetection\\weights",
+  "runs_dir": "C:\\Users\\mathe\\OneDrive\\Documents\\Documents\\2026.1\\cvproject\\ComputerVision-CCTVgundetection\\runs",
+  "uuid": "139f76c645ff04832479d7ab4dbbb253b30d5a0225e5afb5ca4d90c84e931e0b",
+  "sync": true,
+  "api_key": "",
+  "openai_api_key": "",
+  "clearml": true,
+  "comet": true,
+  "dvc": true,
+  "hub": true,
+  "mlflow": true,
+  "neptune": true,
+  "raytune": true,
+  "tensorboard": false,
+  "wandb": false,
+  "vscode_msg": true,
+  "openvino_msg": true
+}
