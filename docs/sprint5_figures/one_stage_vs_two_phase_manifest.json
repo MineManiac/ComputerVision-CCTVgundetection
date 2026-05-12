@@ -1,0 +1,70 @@
+{
+  "cases": [
+    {
+      "label": "one_stage_wins",
+      "caption": "One-stage detects weapons that the two-phase pipeline misses.",
+      "path": "docs/sprint5_figures/comparison_one_stage_wins.jpg",
+      "image_stem": "Cam5-From09-24-18To09-26-43-Guns_x264_Segment_0_x264_frame_120",
+      "gt": 2,
+      "one_tp": 2,
+      "one_fp": 0,
+      "one_fn": 0,
+      "two_tp": 0,
+      "two_fp": 0,
+      "two_fn": 2
+    },
+    {
+      "label": "both_detect",
+      "caption": "Both methods detect at least one weapon, but error profiles differ.",
+      "path": "docs/sprint5_figures/comparison_both_detect.jpg",
+      "image_stem": "Cam5-From09-24-18To09-26-43-Guns_x264_Segment_0_x264_frame_104",
+      "gt": 5,
+      "one_tp": 2,
+      "one_fp": 0,
+      "one_fn": 3,
+      "two_tp": 1,
+      "two_fp": 0,
+      "two_fn": 4
+    },
+    {
+      "label": "two_phase_only",
+      "caption": "Two-phase finds a weapon missed by one-stage.",
+      "path": "docs/sprint5_figures/comparison_two_phase_only.jpg",
+      "image_stem": "Cam5-From09-24-18To09-26-43-Guns_x264_Segment_0_x264_frame_85",
+      "gt": 5,
+      "one_tp": 0,
+      "one_fp": 1,
+      "one_fn": 5,
+      "two_tp": 1,
+      "two_fp": 0,
+      "two_fn": 4
+    },
+    {
+      "label": "both_miss",
+      "caption": "Both methods miss difficult or occluded weapons.",
+      "path": "docs/sprint5_figures/comparison_both_miss.jpg",
+      "image_stem": "Cam5-From09-24-18To09-26-43-Guns_x264_Segment_0_x264_frame_83",
+      "gt": 6,
+      "one_tp": 0,
+      "one_fp": 0,
+      "one_fn": 6,
+      "two_tp": 0,
+      "two_fp": 0,
+      "two_fn": 6
+    },
+    {
+      "label": "false_positive",
+      "caption": "False-positive behavior on a frame without ground-truth weapons.",
+      "path": "docs/sprint5_figures/comparison_false_positive.jpg",
+      "image_stem": "Cam5-From09-46-24To09-47-02_x264_frame_3",
+      "gt": 0,
+      "one_tp": 0,
+      "one_fp": 1,
+      "one_fn": 0,
+      "two_tp": 0,
+      "two_fp": 2,
+      "two_fn": 0
+    }
+  ],
+  "markdown": "docs/sprint5_one_stage_vs_two_phase_examples.md"
+}

@@ -1,0 +1,10 @@
+{
+  "figures": {
+    "Successful detection": "docs/sprint5_figures/example_success_img9604.jpg",
+    "Partial success": "docs/sprint5_figures/example_partial_img9604.jpg",
+    "False positive": "docs/sprint5_figures/example_false_positive_img9604.jpg",
+    "Missed weapon": "docs/sprint5_figures/example_miss_img9604.jpg"
+  },
+  "threshold_plot": "docs/sprint5_figures/single_stage_threshold_sweep_comparison.png",
+  "training_attempts_plot": "docs/sprint5_figures/single_stage_img960_training_attempts.png"
+}

@@ -1,0 +1,10 @@
+{
+  "crop_sheet": "docs/sprint5_figures/two_phase_person_crop_samples.jpg",
+  "context_examples": [
+    "docs/sprint5_figures/two_phase_crop_context_1.jpg",
+    "docs/sprint5_figures/two_phase_crop_context_2.jpg",
+    "docs/sprint5_figures/two_phase_crop_context_3.jpg"
+  ],
+  "stage0_misses": "docs/sprint5_figures/two_phase_stage0_miss_examples.jpg",
+  "markdown": "docs/sprint5_two_phase_crop_quality_check.md"
+}
