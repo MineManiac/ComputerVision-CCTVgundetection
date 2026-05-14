@@ -43,7 +43,7 @@ DEFAULT_TWO_PHASE_CONFIG: dict[str, Any] = {
         "weapon_detector": "runs/weapon_detector/weights/best.pt",
     },
     "thresholds": {
-        "person_conf": 0.25,
+        "person_conf": 0.10,
         "person_iou": 0.45,
         "weapon_conf": 0.25,
         "weapon_iou": 0.45,
@@ -52,8 +52,12 @@ DEFAULT_TWO_PHASE_CONFIG: dict[str, Any] = {
     },
     "dataset": {
         "crop_padding": 0.20,
+        "crop_padding_x": 0.35,
+        "crop_padding_y": 0.25,
+        "min_crop_side": 256,
         "max_negatives_per_image": 2,
         "classifier_image_size": 224,
+        "match_ioa_threshold": 0.60,
     },
     "training": {
         "batch_size": 32,
@@ -66,6 +70,10 @@ DEFAULT_TWO_PHASE_CONFIG: dict[str, Any] = {
     },
     "inference": {
         "default_device": "cpu",
+        "person_imgsz": 960,
+        "person_max_det": 50,
+        "weapon_crop_imgsz": 640,
+        "enable_hold_gate": False,
     },
 }
 
@@ -217,6 +225,10 @@ def center_of_box(box: dict[str, Any]) -> tuple[float, float]:
     return ((float(box["xmin"]) + float(box["xmax"])) / 2.0, (float(box["ymin"]) + float(box["ymax"])) / 2.0)
 
 
+def point_in_box(x: float, y: float, box: dict[str, Any]) -> bool:
+    return float(box["xmin"]) <= x <= float(box["xmax"]) and float(box["ymin"]) <= y <= float(box["ymax"])
+
+
 def clamp_box(
     xmin: float,
     ymin: float,
@@ -239,13 +251,39 @@ def expand_box(
     ymax: float,
     width: int,
     height: int,
-    padding_fraction: float,
+    padding_fraction: float | None = None,
+    padding_x_fraction: float | None = None,
+    padding_y_fraction: float | None = None,
+    min_side: int | None = None,
 ) -> tuple[int, int, int, int]:
     box_width = xmax - xmin
     box_height = ymax - ymin
-    pad_x = box_width * padding_fraction
-    pad_y = box_height * padding_fraction
-    return clamp_box(xmin - pad_x, ymin - pad_y, xmax + pad_x, ymax + pad_y, width=width, height=height)
+    if padding_x_fraction is None:
+        padding_x_fraction = padding_fraction if padding_fraction is not None else 0.0
+    if padding_y_fraction is None:
+        padding_y_fraction = padding_fraction if padding_fraction is not None else 0.0
+
+    pad_x = box_width * float(padding_x_fraction)
+    pad_y = box_height * float(padding_y_fraction)
+
+    expanded_xmin = xmin - pad_x
+    expanded_ymin = ymin - pad_y
+    expanded_xmax = xmax + pad_x
+    expanded_ymax = ymax + pad_y
+
+    if min_side is not None and min_side > 0:
+        current_width = expanded_xmax - expanded_xmin
+        current_height = expanded_ymax - expanded_ymin
+        if current_width < min_side:
+            extra_x = (float(min_side) - current_width) / 2.0
+            expanded_xmin -= extra_x
+            expanded_xmax += extra_x
+        if current_height < min_side:
+            extra_y = (float(min_side) - current_height) / 2.0
+            expanded_ymin -= extra_y
+            expanded_ymax += extra_y
+
+    return clamp_box(expanded_xmin, expanded_ymin, expanded_xmax, expanded_ymax, width=width, height=height)
 
 
 def box_area(box: dict[str, Any]) -> float:
@@ -270,6 +308,78 @@ def box_iou(box_a: dict[str, Any], box_b: dict[str, Any]) -> float:
     if union <= 0:
         return 0.0
     return inter_area / union
+
+
+def box_ioa(box_a: dict[str, Any], box_b: dict[str, Any]) -> float:
+    inter_xmin = max(float(box_a["xmin"]), float(box_b["xmin"]))
+    inter_ymin = max(float(box_a["ymin"]), float(box_b["ymin"]))
+    inter_xmax = min(float(box_a["xmax"]), float(box_b["xmax"]))
+    inter_ymax = min(float(box_a["ymax"]), float(box_b["ymax"]))
+
+    inter_width = max(0.0, inter_xmax - inter_xmin)
+    inter_height = max(0.0, inter_ymax - inter_ymin)
+    inter_area = inter_width * inter_height
+    if inter_area <= 0:
+        return 0.0
+
+    area_a = box_area(box_a)
+    if area_a <= 0:
+        return 0.0
+    return inter_area / area_a
+
+
+def crop_matches_weapon(
+    crop_box: dict[str, Any],
+    weapon_box: dict[str, Any],
+    match_ioa_threshold: float,
+) -> tuple[bool, bool, float]:
+    center_x, center_y = center_of_box(weapon_box)
+    center_match = point_in_box(center_x, center_y, crop_box)
+    ioa = box_ioa(weapon_box, crop_box)
+    return center_match or ioa >= match_ioa_threshold, center_match, ioa
+
+
+def intersect_boxes(box_a: dict[str, Any], box_b: dict[str, Any]) -> dict[str, float] | None:
+    inter_xmin = max(float(box_a["xmin"]), float(box_b["xmin"]))
+    inter_ymin = max(float(box_a["ymin"]), float(box_b["ymin"]))
+    inter_xmax = min(float(box_a["xmax"]), float(box_b["xmax"]))
+    inter_ymax = min(float(box_a["ymax"]), float(box_b["ymax"]))
+    if inter_xmax <= inter_xmin or inter_ymax <= inter_ymin:
+        return None
+    return {
+        "xmin": inter_xmin,
+        "ymin": inter_ymin,
+        "xmax": inter_xmax,
+        "ymax": inter_ymax,
+    }
+
+
+def project_box_into_crop(
+    box: dict[str, Any],
+    crop_box: dict[str, Any],
+) -> dict[str, float] | None:
+    clipped = intersect_boxes(box, crop_box)
+    if clipped is None:
+        return None
+    return {
+        "xmin": float(clipped["xmin"]) - float(crop_box["xmin"]),
+        "ymin": float(clipped["ymin"]) - float(crop_box["ymin"]),
+        "xmax": float(clipped["xmax"]) - float(crop_box["xmin"]),
+        "ymax": float(clipped["ymax"]) - float(crop_box["ymin"]),
+    }
+
+
+def yolo_label_line_for_box(
+    box: dict[str, Any],
+    image_width: int,
+    image_height: int,
+    class_id: int = 0,
+) -> str:
+    x_center = ((float(box["xmin"]) + float(box["xmax"])) / 2.0) / float(image_width)
+    y_center = ((float(box["ymin"]) + float(box["ymax"])) / 2.0) / float(image_height)
+    box_width = (float(box["xmax"]) - float(box["xmin"])) / float(image_width)
+    box_height = (float(box["ymax"]) - float(box["ymin"])) / float(image_height)
+    return f"{class_id} {x_center:.6f} {y_center:.6f} {box_width:.6f} {box_height:.6f}"
 
 
 def nms_indices(boxes: list[dict[str, Any]], scores: list[float], iou_threshold: float) -> list[int]:

@@ -232,22 +232,44 @@ The Sprint 4 pipeline is prepared to run once the required checkpoints are avail
 python scripts/build_two_phase_dataset.py --device 0
 ```
 
-### 2. Train the Stage 1 hold/no_hold classifier
+This now creates both:
+
+- `data/interim/two_phase/crops/` for the optional `hold` / `no_hold` ablation
+- `data/interim/two_phase/yolo_crops/` with one padded crop per detected person plus YOLO labels for Stage 2 crop training
+
+### 2. Train the crop-stage weapon detector
+
+```bash
+python scripts/train_single_stage_yolo.py \
+  --data data/interim/two_phase/yolo_crops/dataset.yaml \
+  --project runs/two_phase \
+  --name weapon_crop_detector \
+  --device 0
+```
+
+### 3. Optional: train the Stage 1 hold/no_hold classifier
 
 ```bash
 python scripts/train_carry_classifier.py --device 0
 ```
 
-### 3. Run two-phase inference
+### 4. Run two-phase inference
 
 ```bash
 python scripts/run_two_phase_inference.py \
   --split test \
   --device 0 \
-  --weapon-model runs/<your-yolo26n-checkpoint>/weights/best.pt
+  --weapon-model runs/two_phase/weapon_crop_detector/weights/best.pt
 ```
 
-### 4. Compare single-stage vs two-phase
+To reproduce the historical gated ablation, add:
+
+```bash
+  --enable-hold-gate \
+  --hold-checkpoint runs/two_phase/carry_classifier/best.pt
+```
+
+### 5. Compare single-stage vs two-phase
 
 ```bash
 python scripts/evaluate_detection_pipeline.py \
@@ -260,8 +282,13 @@ python scripts/evaluate_detection_pipeline.py \
 
 Important notes:
 
-- `yolo11n.pt` is the default person detector for Stage 0.
-- The Sprint 3 `YOLO26n` checkpoint is **not** versioned in the repository, so pass it explicitly with `--weapon-model` or update `configs/two_phase.yaml`.
+- `yolo11n.pt` is the default person detector for Stage 0, now used with a recall-first configuration from `configs/two_phase.yaml`.
+- The default two-phase path is now `person detection -> padded crop per person -> crop-stage weapon detection`.
+- The `hold/no_hold` classifier is preserved as an optional ablation and is disabled by default.
+- `scripts/run_two_phase_inference.py` also writes debug artifacts:
+  - `*_predictions_pre_nms.csv`
+  - `*_person_candidates.csv`
+  - `*_image_summary.csv`
 - The detailed protocol is documented in `docs/sprint4_two_phase_protocol.md`.
 
 ---

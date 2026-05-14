@@ -12,7 +12,7 @@ models:
   weapon_detector: runs/weapon_detector/weights/best.pt
 
 thresholds:
-  person_conf: 0.25
+  person_conf: 0.10
   person_iou: 0.45
   weapon_conf: 0.25
   weapon_iou: 0.45
@@ -21,8 +21,12 @@ thresholds:
 
 dataset:
   crop_padding: 0.20
+  crop_padding_x: 0.35
+  crop_padding_y: 0.25
+  min_crop_side: 256
   max_negatives_per_image: 2
   classifier_image_size: 224
+  match_ioa_threshold: 0.60
 
 training:
   batch_size: 32
@@ -35,3 +39,7 @@ training:
 
 inference:
   default_device: cpu
+  person_imgsz: 960
+  person_max_det: 50
+  weapon_crop_imgsz: 640
+  enable_hold_gate: false

@@ -5,16 +5,20 @@ from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
+from pandas.errors import EmptyDataError
 from ultralytics import YOLO
 
 from two_phase_utils import (
     box_iou,
+    center_of_box,
+    crop_matches_weapon,
     ensure_dir,
     extract_yolo_boxes,
     filter_weapon_boxes,
     load_split_manifest,
     load_two_phase_config,
     parse_voc_xml,
+    point_in_box,
     project_root,
     resolve_path,
 )
@@ -66,6 +70,25 @@ def resolve_optional_path(root: Path, path: Path | None) -> Path | None:
     if path.is_absolute():
         return path
     return root / path
+
+
+def infer_two_phase_debug_path(predictions_path: Path | None, suffix: str) -> Path | None:
+    if predictions_path is None:
+        return None
+    stem = predictions_path.stem
+    if stem.endswith("_predictions"):
+        prefix = stem[: -len("_predictions")]
+        return predictions_path.with_name(f"{prefix}_{suffix}.csv")
+    return predictions_path.with_name(f"{stem}_{suffix}.csv")
+
+
+def read_csv_if_present(path: Path | None) -> pd.DataFrame | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        return pd.read_csv(path)
+    except EmptyDataError:
+        return None
 
 
 def generate_single_stage_predictions(
@@ -124,11 +147,7 @@ def generate_single_stage_predictions(
     return df
 
 
-def evaluate_predictions(
-    manifest_df: pd.DataFrame,
-    predictions_df: pd.DataFrame,
-    iou_threshold: float,
-) -> tuple[dict[str, float], pd.DataFrame]:
+def group_prediction_rows(predictions_df: pd.DataFrame) -> dict[str, list[dict[str, float]]]:
     preds_by_image: dict[str, list[dict[str, float]]] = defaultdict(list)
     for _, row in predictions_df.iterrows():
         preds_by_image[str(row["image_path"])].append(
@@ -140,6 +159,15 @@ def evaluate_predictions(
                 "ymax": float(row["ymax"]),
             }
         )
+    return preds_by_image
+
+
+def evaluate_predictions(
+    manifest_df: pd.DataFrame,
+    predictions_df: pd.DataFrame,
+    iou_threshold: float,
+) -> tuple[dict[str, float], pd.DataFrame]:
+    preds_by_image = group_prediction_rows(predictions_df)
 
     totals = {"tp": 0, "fp": 0, "fn": 0}
     per_image_rows: list[dict[str, object]] = []
@@ -208,9 +236,105 @@ def maybe_load_image_summary(image_summary_path: Path | None) -> dict[str, float
     df = pd.read_csv(image_summary_path)
     return {
         "stage0_miss_count": int(df["stage0_image_miss"].sum()) if "stage0_image_miss" in df.columns else "",
+        "stage0_raw_person_miss_count": int(df["stage0_raw_person_miss"].sum()) if "stage0_raw_person_miss" in df.columns else "",
         "stage1_rejected": int(df["persons_filtered_out"].sum()) if "persons_filtered_out" in df.columns else "",
         "stage2_passed": int(df["persons_passed_stage2"].sum()) if "persons_passed_stage2" in df.columns else "",
+        "raw_person_cover": int(df["raw_person_cover"].sum()) if "raw_person_cover" in df.columns else "",
+        "expanded_crop_cover": int(df["expanded_crop_cover"].sum()) if "expanded_crop_cover" in df.columns else "",
+        "detections_removed_by_nms": int(df["final_weapon_detections_removed_by_nms"].sum())
+        if "final_weapon_detections_removed_by_nms" in df.columns
+        else "",
     }
+
+
+def compute_two_phase_error_breakdown(
+    manifest_df: pd.DataFrame,
+    final_predictions_df: pd.DataFrame,
+    pre_nms_predictions_df: pd.DataFrame | None,
+    candidate_df: pd.DataFrame | None,
+    iou_threshold: float,
+    match_ioa_threshold: float,
+) -> tuple[dict[str, int], pd.DataFrame]:
+    final_by_image = group_prediction_rows(final_predictions_df)
+    pre_nms_by_image = group_prediction_rows(pre_nms_predictions_df) if pre_nms_predictions_df is not None else {}
+    candidate_by_image: dict[str, list[dict[str, object]]] = defaultdict(list)
+    if candidate_df is not None:
+        for _, row in candidate_df.iterrows():
+            candidate_by_image[str(row["image_path"])].append(row.to_dict())
+
+    totals = {
+        "missed_by_person_detector": 0,
+        "missed_by_crop_cover": 0,
+        "missed_by_crop_detector": 0,
+        "removed_by_final_nms": 0,
+    }
+    per_image_rows: list[dict[str, object]] = []
+
+    for _, row in manifest_df.iterrows():
+        annotation_path = project_root() / Path(row["annotation_path"])
+        _, _, objects = parse_voc_xml(annotation_path)
+        gt_boxes = filter_weapon_boxes(objects)
+        final_preds = final_by_image.get(str(row["image_path"]), [])
+        pre_nms_preds = pre_nms_by_image.get(str(row["image_path"]), [])
+        candidates = candidate_by_image.get(str(row["image_path"]), [])
+
+        image_counts = {
+            "missed_by_person_detector": 0,
+            "missed_by_crop_cover": 0,
+            "missed_by_crop_detector": 0,
+            "removed_by_final_nms": 0,
+        }
+
+        for gt_box in gt_boxes:
+            final_match = any(box_iou(pred, gt_box) >= iou_threshold for pred in final_preds)
+            if final_match:
+                continue
+
+            raw_cover = False
+            expanded_cover = False
+            for candidate in candidates:
+                person_box = {
+                    "xmin": float(candidate["person_xmin"]),
+                    "ymin": float(candidate["person_ymin"]),
+                    "xmax": float(candidate["person_xmax"]),
+                    "ymax": float(candidate["person_ymax"]),
+                }
+                crop_box = {
+                    "xmin": float(candidate["crop_xmin"]),
+                    "ymin": float(candidate["crop_ymin"]),
+                    "xmax": float(candidate["crop_xmax"]),
+                    "ymax": float(candidate["crop_ymax"]),
+                }
+                center_x, center_y = center_of_box(gt_box)
+                if point_in_box(center_x, center_y, person_box):
+                    raw_cover = True
+                if crop_matches_weapon(crop_box, gt_box, match_ioa_threshold=match_ioa_threshold)[0]:
+                    expanded_cover = True
+                if raw_cover and expanded_cover:
+                    break
+
+            pre_nms_match = any(box_iou(pred, gt_box) >= iou_threshold for pred in pre_nms_preds)
+            if not raw_cover:
+                image_counts["missed_by_person_detector"] += 1
+            elif not expanded_cover:
+                image_counts["missed_by_crop_cover"] += 1
+            elif pre_nms_match:
+                image_counts["removed_by_final_nms"] += 1
+            else:
+                image_counts["missed_by_crop_detector"] += 1
+
+        for key in totals:
+            totals[key] += image_counts[key]
+
+        per_image_rows.append(
+            {
+                "image_stem": row["image_stem"],
+                "image_path": row["image_path"],
+                **image_counts,
+            }
+        )
+
+    return totals, pd.DataFrame(per_image_rows)
 
 
 def main() -> None:
@@ -261,8 +385,16 @@ def main() -> None:
             "pipeline": "single_stage",
             **single_stage_metrics,
             "stage0_miss_count": "",
+            "stage0_raw_person_miss_count": "",
             "stage1_rejected": "",
             "stage2_passed": "",
+            "raw_person_cover": "",
+            "expanded_crop_cover": "",
+            "detections_removed_by_nms": "",
+            "missed_by_person_detector": "",
+            "missed_by_crop_cover": "",
+            "missed_by_crop_detector": "",
+            "removed_by_final_nms": "",
         }
     )
     per_image_outputs["single_stage"] = single_stage_per_image
@@ -277,8 +409,23 @@ def main() -> None:
             iou_threshold=float(config["thresholds"]["evaluation_iou"]),
         )
         extra_stats = maybe_load_image_summary(two_phase_image_summary_path)
-        comparison_rows.append({"pipeline": "two_phase", **two_phase_metrics, **extra_stats})
+
+        pre_nms_predictions_path = infer_two_phase_debug_path(two_phase_predictions_path, "predictions_pre_nms")
+        person_candidates_path = infer_two_phase_debug_path(two_phase_predictions_path, "person_candidates")
+        pre_nms_predictions_df = read_csv_if_present(pre_nms_predictions_path)
+        person_candidates_df = read_csv_if_present(person_candidates_path)
+        error_breakdown, breakdown_per_image = compute_two_phase_error_breakdown(
+            manifest_df=manifest_df,
+            final_predictions_df=two_phase_predictions_df,
+            pre_nms_predictions_df=pre_nms_predictions_df,
+            candidate_df=person_candidates_df,
+            iou_threshold=float(config["thresholds"]["evaluation_iou"]),
+            match_ioa_threshold=float(config["dataset"].get("match_ioa_threshold", 0.60)),
+        )
+
+        comparison_rows.append({"pipeline": "two_phase", **two_phase_metrics, **extra_stats, **error_breakdown})
         per_image_outputs["two_phase"] = two_phase_per_image
+        per_image_outputs["two_phase_error_breakdown"] = breakdown_per_image
 
         comparison_rows.append(
             {
@@ -291,8 +438,16 @@ def main() -> None:
                 "f1": two_phase_metrics["f1"] - single_stage_metrics["f1"],
                 "detections_per_image": two_phase_metrics["detections_per_image"] - single_stage_metrics["detections_per_image"],
                 "stage0_miss_count": extra_stats.get("stage0_miss_count", ""),
+                "stage0_raw_person_miss_count": extra_stats.get("stage0_raw_person_miss_count", ""),
                 "stage1_rejected": extra_stats.get("stage1_rejected", ""),
                 "stage2_passed": extra_stats.get("stage2_passed", ""),
+                "raw_person_cover": extra_stats.get("raw_person_cover", ""),
+                "expanded_crop_cover": extra_stats.get("expanded_crop_cover", ""),
+                "detections_removed_by_nms": extra_stats.get("detections_removed_by_nms", ""),
+                "missed_by_person_detector": error_breakdown.get("missed_by_person_detector", ""),
+                "missed_by_crop_cover": error_breakdown.get("missed_by_crop_cover", ""),
+                "missed_by_crop_detector": error_breakdown.get("missed_by_crop_detector", ""),
+                "removed_by_final_nms": error_breakdown.get("removed_by_final_nms", ""),
             }
         )
 
@@ -311,6 +466,12 @@ def main() -> None:
         f.write("## Comparison\n\n")
         f.write(comparison_df.to_markdown(index=False))
         f.write("\n")
+        if "two_phase" in per_image_outputs:
+            f.write("\n## Two-Phase Error Breakdown\n\n")
+            f.write("- `missed_by_person_detector`: no detected person box covered the weapon center.\n")
+            f.write("- `missed_by_crop_cover`: a person proposal existed, but the expanded crop still did not cover the weapon well enough.\n")
+            f.write("- `missed_by_crop_detector`: the crop covered the weapon, but Stage 2 still missed it.\n")
+            f.write("- `removed_by_final_nms`: a pre-NMS crop detection matched the weapon, but it was suppressed by image-level NMS.\n")
 
     print(f"[OK] Saved comparison CSV: {comparison_path}")
     print(f"[OK] Saved summary: {summary_path}")
