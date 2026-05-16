@@ -16,6 +16,7 @@ env/
 # training outputs
 runs/
 outputs/
+results/debug/
 wandb/
 checkpoints/
 *.pt

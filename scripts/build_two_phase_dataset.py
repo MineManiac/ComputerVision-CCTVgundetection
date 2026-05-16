@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+os.environ.setdefault("YOLO_CONFIG_DIR", str(PROJECT_ROOT))
+
 from ultralytics import YOLO
 
 from two_phase_utils import (
@@ -25,6 +30,7 @@ from two_phase_utils import (
     resolve_path,
     parse_voc_xml,
     yolo_label_line_for_box,
+    zoom_lower_fraction,
 )
 
 
@@ -124,6 +130,13 @@ def main() -> None:
     match_ioa_threshold = float(dataset_config.get("match_ioa_threshold", 0.60))
     person_imgsz = int(inference_config.get("person_imgsz", 960))
     person_max_det = int(inference_config.get("person_max_det", 50))
+    # Zoom-crop: save only the lower fraction of the person crop for the
+    # carry classifier. Weapons sit at waist/hand level (~lower 55% of body).
+    # This increases weapon pixel size in 224x224 by ~80% with no re-labelling.
+    classifier_zoom_fraction: float | None = None
+    raw_zoom = dataset_config.get("classifier_zoom_lower_fraction", None)
+    if raw_zoom is not None:
+        classifier_zoom_fraction = float(raw_zoom)
 
     summary_rows: list[dict[str, object]] = []
 
@@ -273,7 +286,14 @@ def main() -> None:
                     legacy_label = "carry" if label == "hold" else "no_carry"
                     crop_filename = f"{row['image_stem']}_person_{det_idx:02d}_{label}.jpg"
                     crop_output_path = crops_root / split_name / label / crop_filename
-                    crop.save(crop_output_path, quality=95)
+                    # Apply zoom-crop before saving: keep only the lower fraction
+                    # of the person crop where weapons are typically held.
+                    classifier_crop = (
+                        zoom_lower_fraction(crop, classifier_zoom_fraction)
+                        if classifier_zoom_fraction is not None
+                        else crop
+                    )
+                    classifier_crop.save(crop_output_path, quality=95)
 
                     counters[f"{label}_crops"] += 1
                     crop_rows.append(

@@ -9,37 +9,65 @@ paths:
 
 models:
   person_detector: yolo11n.pt
-  weapon_detector: runs/weapon_detector/weights/best.pt
+  weapon_detector: runs/two_phase/weapon_crop_detector/weights/best.pt
 
 thresholds:
   person_conf: 0.10
   person_iou: 0.45
-  weapon_conf: 0.25
+  # Lowered weapon_conf to improve recall on small/occluded weapons.
+  # The paper showed that small weapons at CCTV distance are the main bottleneck.
+  weapon_conf: 0.25  # era 0.15
   weapon_iou: 0.45
   evaluation_iou: 0.50
   image_level_nms_iou: 0.50
 
 dataset:
   crop_padding: 0.20
-  crop_padding_x: 0.35
-  crop_padding_y: 0.25
+  # Reduced from 0.35/0.25 → 0.15/0.15.
+  # Analysis showed weapons occupy only 10-17px in 224x224 with large padding.
+  # Smaller padding → weapon occupies a larger fraction of the crop.
+  crop_padding_x: 0.15
+  crop_padding_y: 0.15
   min_crop_side: 256
   max_negatives_per_image: 2
   classifier_image_size: 224
   match_ioa_threshold: 0.60
+  # Zoom into lower fraction of person crop for carry classifier training.
+  # Weapons are typically at waist/hands level (lower ~55% of the person bbox).
+  # Set to null to disable and use the full crop (legacy behaviour).
+  classifier_zoom_lower_fraction: 0.55
 
 training:
-  batch_size: 32
-  epochs: 12
-  learning_rate: 0.001
+  batch_size: 16
+  epochs: 25
+  learning_rate: 0.0003
   weight_decay: 0.0001
   num_workers: 0
   seed: 42
-  threshold_recall_floor: 0.70
+  threshold_recall_floor: 0.80
+  # Backbone for carry classifier: "mobilenet_v3_small" or "custom_cnn" (legacy).
+  # Paper recommendation: use pre-trained features. MobileNetV3 pre-trained on
+  # ImageNet provides far better generalisation than a 3-layer CNN from scratch.
+  classifier_backbone: mobilenet_v3_small
+  # Freeze backbone layers during first N epochs, then unfreeze for fine-tuning.
+  backbone_freeze_epochs: 5
+  # Learning rate for backbone parameters after unfreezing (lower than head lr).
+  backbone_lr_factor: 0.1
 
 inference:
   default_device: cpu
   person_imgsz: 960
   person_max_det: 50
-  weapon_crop_imgsz: 640
-  enable_hold_gate: false
+  # Increased from 640 → 1280. Weapons in crops are ~30px at 640px (YOLO tiny-
+  # object threshold). At 1280px they become ~60px, well within medium-object
+  # range where YOLO performs ~38% better (per COCO benchmark data).
+  weapon_crop_imgsz: 1280
+  enable_hold_gate: true
+  # SAHI (Slicing Aided Hyper Inference) tiling for weapon detection in crops.
+  # Crops are sliced into overlapping tiles; weapon detector runs on each tile;
+  # results are merged back with NMS. Critical for weapons <32px in the crop.
+  sahi_enabled: true
+  sahi_tile_size: 320
+  sahi_overlap_ratio: 0.30
+  # Minimum tile dimension. If the crop is smaller than this, skip tiling.
+  sahi_min_crop_side: 200

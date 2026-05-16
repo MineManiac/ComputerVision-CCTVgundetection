@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import math
 import random
 import xml.etree.ElementTree as ET
 from copy import deepcopy
@@ -12,7 +13,7 @@ import torch
 import torch.nn as nn
 import yaml
 from PIL import Image
-from torchvision import transforms
+from torchvision import models, transforms
 
 WEAPON_CLASSES = {
     "handgun",
@@ -40,7 +41,7 @@ DEFAULT_TWO_PHASE_CONFIG: dict[str, Any] = {
     },
     "models": {
         "person_detector": "yolo11n.pt",
-        "weapon_detector": "runs/weapon_detector/weights/best.pt",
+        "weapon_detector": "runs/two_phase/weapon_crop_detector/weights/best.pt",
     },
     "thresholds": {
         "person_conf": 0.10,
@@ -107,6 +108,221 @@ class CarryClassifierNet(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.features(x)
         return self.classifier(x).squeeze(1)
+
+
+# ---------------------------------------------------------------------------
+# MobileNetV3-Small carry classifier  (replaces the custom 3-layer CNN)
+# ---------------------------------------------------------------------------
+
+class MobileNetV3CarryClassifier(nn.Module):
+    """
+    MobileNetV3-Small backbone (ImageNet pre-trained) with a binary head.
+
+    Rationale (from paper analysis):
+      - Weapons in 224x224 crops appear as 10-17px objects (87% of pairs < 32x32).
+      - A 3-layer CNN trained from scratch cannot learn reliable features at that
+        scale from ~200 positive examples.
+      - ImageNet pre-trained features (edges, textures, elongated shapes) transfer
+        well to weapon silhouettes even at tiny scale.
+
+    Training strategy (see train_carry_classifier.py):
+      1. Freeze backbone for the first `backbone_freeze_epochs`.
+      2. Train only the head so it adapts to the binary task quickly.
+      3. Unfreeze backbone and continue at a lower LR (backbone_lr_factor * lr).
+    """
+
+    def __init__(self, image_size: int = 224, pretrained: bool = True) -> None:
+        super().__init__()
+        weights = models.MobileNet_V3_Small_Weights.IMAGENET1K_V1 if pretrained else None
+        backbone = models.mobilenet_v3_small(weights=weights)
+        # Replace the built-in classifier with a simple binary head
+        in_features = backbone.classifier[0].in_features  # 576
+        backbone.classifier = nn.Sequential(
+            nn.Linear(in_features, 128),
+            nn.Hardswish(inplace=True),
+            nn.Dropout(p=0.3, inplace=True),
+            nn.Linear(128, 1),
+        )
+        self.backbone = backbone
+        self.image_size = image_size
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.backbone(x).squeeze(1)
+
+    def freeze_backbone(self) -> None:
+        """Freeze all backbone layers except the classifier head."""
+        for param in self.backbone.features.parameters():
+            param.requires_grad = False
+
+    def unfreeze_backbone(self) -> None:
+        """Unfreeze backbone for fine-tuning."""
+        for param in self.backbone.features.parameters():
+            param.requires_grad = True
+
+    def head_parameters(self):
+        return self.backbone.classifier.parameters()
+
+    def backbone_parameters(self):
+        return self.backbone.features.parameters()
+
+
+def build_carry_classifier(
+    backbone: str = "mobilenet_v3_small",
+    image_size: int = 224,
+    pretrained: bool = True,
+) -> nn.Module:
+    """
+    Factory function. Returns the appropriate carry classifier.
+
+    Args:
+        backbone: "mobilenet_v3_small" (recommended) or "custom_cnn" (legacy).
+        image_size: Input size. Only relevant for custom_cnn.
+        pretrained: Whether to load ImageNet weights (MobileNetV3 only).
+    """
+    if backbone == "mobilenet_v3_small":
+        return MobileNetV3CarryClassifier(image_size=image_size, pretrained=pretrained)
+    if backbone == "custom_cnn":
+        return CarryClassifierNet(image_size=image_size)
+    raise ValueError(f"Unknown classifier backbone: {backbone!r}. Choose 'mobilenet_v3_small' or 'custom_cnn'.")
+
+
+# ---------------------------------------------------------------------------
+# SAHI — Slicing Aided Hyper Inference (manual implementation, no extra deps)
+# ---------------------------------------------------------------------------
+
+def _sahi_slice_coords(
+    image_w: int,
+    image_h: int,
+    tile_size: int,
+    overlap_ratio: float,
+) -> list[tuple[int, int, int, int]]:
+    """
+    Generate (xmin, ymin, xmax, ymax) pixel coordinates for overlapping tiles.
+
+    The last tile in each row/column is snapped to the image edge to avoid
+    border strips.
+    """
+    stride = max(1, int(tile_size * (1.0 - overlap_ratio)))
+    slices: list[tuple[int, int, int, int]] = []
+
+    x_starts = list(range(0, max(1, image_w - tile_size + 1), stride))
+    if not x_starts or x_starts[-1] + tile_size < image_w:
+        x_starts.append(max(0, image_w - tile_size))
+
+    y_starts = list(range(0, max(1, image_h - tile_size + 1), stride))
+    if not y_starts or y_starts[-1] + tile_size < image_h:
+        y_starts.append(max(0, image_h - tile_size))
+
+    for y0 in y_starts:
+        for x0 in x_starts:
+            x1 = min(x0 + tile_size, image_w)
+            y1 = min(y0 + tile_size, image_h)
+            slices.append((x0, y0, x1, y1))
+
+    return slices
+
+
+def sahi_predict_on_crop(
+    crop_image: Image.Image,
+    weapon_model: Any,
+    conf_threshold: float,
+    iou_threshold: float,
+    device: str,
+    infer_imgsz: int,
+    tile_size: int = 320,
+    overlap_ratio: float = 0.30,
+    min_crop_side: int = 200,
+    nms_iou_threshold: float = 0.45,
+) -> list[dict[str, Any]]:
+    """
+    Run YOLO weapon detection on a person crop using SAHI-style tiling.
+
+    Rationale:
+      - Weapons appear as ~10-30px in 600x700px crops.  At 640px inference
+        they land in YOLO's "tiny" bucket where AP is ~38% below medium.
+      - Tiling to 320px tiles and running each at `infer_imgsz` effectively
+        doubles/triples the weapon's pixel footprint inside each tile.
+      - Detections from all tiles are mapped back to crop coordinates and
+        deduplicated with NMS.
+
+    Returns:
+        List of detection dicts with keys xmin, ymin, xmax, ymax, confidence.
+        Coordinates are in the crop's pixel space (origin = top-left of crop).
+    """
+    crop_w, crop_h = crop_image.size
+
+    # If the crop is small enough, just run the detector directly
+    if crop_w < min_crop_side and crop_h < min_crop_side:
+        result = weapon_model.predict(
+            source=crop_image,
+            conf=conf_threshold,
+            iou=iou_threshold,
+            verbose=False,
+            device=device,
+            imgsz=infer_imgsz,
+        )[0]
+        return extract_yolo_boxes(result)
+
+    tile_coords = _sahi_slice_coords(crop_w, crop_h, tile_size, overlap_ratio)
+    all_boxes: list[dict[str, Any]] = []
+    all_scores: list[float] = []
+
+    for tx0, ty0, tx1, ty1 in tile_coords:
+        tile = crop_image.crop((tx0, ty0, tx1, ty1))
+        result = weapon_model.predict(
+            source=tile,
+            conf=conf_threshold,
+            iou=iou_threshold,
+            verbose=False,
+            device=device,
+            imgsz=infer_imgsz,
+        )[0]
+        for det in extract_yolo_boxes(result):
+            # Map tile-local coordinates back to crop space
+            all_boxes.append({
+                "xmin": float(det["xmin"]) + tx0,
+                "ymin": float(det["ymin"]) + ty0,
+                "xmax": float(det["xmax"]) + tx0,
+                "ymax": float(det["ymax"]) + ty0,
+                "confidence": float(det["confidence"]),
+                "class_id": int(det.get("class_id", 0)),
+            })
+            all_scores.append(float(det["confidence"]))
+
+    if not all_boxes:
+        return []
+
+    keep = nms_indices(all_boxes, all_scores, iou_threshold=nms_iou_threshold)
+    return [all_boxes[i] for i in keep]
+
+
+# ---------------------------------------------------------------------------
+# Zoom-crop helper for carry classifier training
+# ---------------------------------------------------------------------------
+
+def zoom_lower_fraction(
+    crop_image: Image.Image,
+    lower_fraction: float,
+) -> Image.Image:
+    """
+    Return the lower `lower_fraction` of a crop (PIL Image).
+
+    Rationale:
+      - Weapons are typically carried at waist/hand level, i.e., the lower
+        ~55% of the person bounding box.
+      - Zooming into this region increases the weapon's pixel footprint in
+        the 224x224 classifier input from ~15px to ~27px (~80% increase).
+      - The classifier learns weapon-relevant features (hand+object shape)
+        rather than full-body silhouette.
+
+    Args:
+        crop_image: PIL Image of the full padded person crop.
+        lower_fraction: Fraction of height to keep, from the bottom.
+                        0.55 means keep the lower 55%.
+    """
+    w, h = crop_image.size
+    y_start = max(0, int(h * (1.0 - lower_fraction)))
+    return crop_image.crop((0, y_start, w, h))
 
 
 def project_root() -> Path:

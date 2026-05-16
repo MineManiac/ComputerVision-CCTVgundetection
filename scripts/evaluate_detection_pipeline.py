@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
 from pandas.errors import EmptyDataError
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+os.environ.setdefault("YOLO_CONFIG_DIR", str(PROJECT_ROOT))
+
 from ultralytics import YOLO
 
 from two_phase_utils import (

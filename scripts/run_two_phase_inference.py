@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import torch
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+os.environ.setdefault("YOLO_CONFIG_DIR", str(PROJECT_ROOT))
+
 from ultralytics import YOLO
 
 from two_phase_utils import (
     CarryClassifierNet,
+    MobileNetV3CarryClassifier,
     build_classifier_transform,
     center_of_box,
     crop_matches_weapon,
@@ -27,6 +33,8 @@ from two_phase_utils import (
     point_in_box,
     project_root,
     resolve_path,
+    sahi_predict_on_crop,
+    zoom_lower_fraction,
 )
 
 
@@ -126,7 +134,7 @@ def main() -> None:
     person_model = YOLO(person_model_name)
     weapon_model = YOLO(str(weapon_model_path))
 
-    hold_model: CarryClassifierNet | None = None
+    hold_model: CarryClassifierNet | MobileNetV3CarryClassifier | None = None
     hold_transform = None
     hold_threshold: float | None = None
     threshold_source = "disabled"
@@ -140,7 +148,11 @@ def main() -> None:
         checkpoint = torch.load(hold_checkpoint_path, map_location=torch_device)
         image_size = int(checkpoint.get("image_size", config["dataset"]["classifier_image_size"]))
         hold_threshold, threshold_source = resolve_hold_threshold(checkpoint, manual_override=args.hold_threshold)
-        hold_model = CarryClassifierNet(image_size=image_size).to(torch_device)
+        backbone = checkpoint.get("backbone", "custom_cnn")
+        if backbone == "mobilenet_v3_small":
+            hold_model = MobileNetV3CarryClassifier(image_size=image_size, pretrained=False).to(torch_device)
+        else:
+            hold_model = CarryClassifierNet(image_size=image_size).to(torch_device)
         hold_model.load_state_dict(checkpoint["model_state_dict"])
         hold_model.eval()
         hold_transform = build_classifier_transform(image_size)
@@ -159,9 +171,16 @@ def main() -> None:
     padding_y_fraction = float(dataset_config.get("crop_padding_y", dataset_config.get("crop_padding", 0.20)))
     min_crop_side = int(dataset_config.get("min_crop_side", 1))
     match_ioa_threshold = float(dataset_config.get("match_ioa_threshold", 0.60))
+    classifier_zoom_fraction = dataset_config.get("classifier_zoom_lower_fraction", None)
+    if classifier_zoom_fraction is not None:
+        classifier_zoom_fraction = float(classifier_zoom_fraction)
     person_imgsz = int(inference_config.get("person_imgsz", 960))
     person_max_det = int(inference_config.get("person_max_det", 50))
     weapon_crop_imgsz = int(inference_config.get("weapon_crop_imgsz", 640))
+    sahi_enabled = bool(inference_config.get("sahi_enabled", False))
+    sahi_tile_size = int(inference_config.get("sahi_tile_size", 320))
+    sahi_overlap_ratio = float(inference_config.get("sahi_overlap_ratio", 0.30))
+    sahi_min_crop_side = int(inference_config.get("sahi_min_crop_side", 200))
 
     for _, row in manifest_df.iterrows():
         image_path = root / Path(row["image_path"])
@@ -242,7 +261,13 @@ def main() -> None:
             if enable_hold_gate:
                 if hold_model is None or hold_transform is None or hold_threshold is None:
                     raise RuntimeError("Hold gate was enabled but the classifier state was not initialized.")
-                hold_prob = predict_hold_probability(hold_model, hold_transform, crop, torch_device)
+                # Optionally zoom into the lower portion of the crop where weapons appear.
+                classifier_input = (
+                    zoom_lower_fraction(crop, classifier_zoom_fraction)
+                    if classifier_zoom_fraction is not None
+                    else crop
+                )
+                hold_prob = predict_hold_probability(hold_model, hold_transform, classifier_input, torch_device)
                 hold_passed = hold_prob >= hold_threshold
                 if not hold_passed:
                     stage1_rejected += 1
@@ -276,15 +301,31 @@ def main() -> None:
                 continue
 
             stage2_passed += 1
-            weapon_result = weapon_model.predict(
-                source=crop,
-                conf=float(threshold_config["weapon_conf"]),
-                iou=float(threshold_config["weapon_iou"]),
-                verbose=False,
-                device=yolo_device,
-                imgsz=weapon_crop_imgsz,
-            )[0]
-            weapon_boxes = extract_yolo_boxes(weapon_result)
+            if sahi_enabled:
+                # SAHI tiling: slice crop → detect on each tile → merge with NMS.
+                # Increases effective weapon resolution from ~30px to ~60px in tiles.
+                weapon_boxes = sahi_predict_on_crop(
+                    crop_image=crop,
+                    weapon_model=weapon_model,
+                    conf_threshold=float(threshold_config["weapon_conf"]),
+                    iou_threshold=float(threshold_config["weapon_iou"]),
+                    device=yolo_device,
+                    infer_imgsz=weapon_crop_imgsz,
+                    tile_size=sahi_tile_size,
+                    overlap_ratio=sahi_overlap_ratio,
+                    min_crop_side=sahi_min_crop_side,
+                    nms_iou_threshold=float(threshold_config["image_level_nms_iou"]),
+                )
+            else:
+                weapon_result = weapon_model.predict(
+                    source=crop,
+                    conf=float(threshold_config["weapon_conf"]),
+                    iou=float(threshold_config["weapon_iou"]),
+                    verbose=False,
+                    device=yolo_device,
+                    imgsz=weapon_crop_imgsz,
+                )[0]
+                weapon_boxes = extract_yolo_boxes(weapon_result)
             for weapon_idx, weapon_box in enumerate(weapon_boxes):
                 global_xmin = crop_xmin + float(weapon_box["xmin"])
                 global_ymin = crop_ymin + float(weapon_box["ymin"])
