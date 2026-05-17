@@ -16,7 +16,7 @@ thresholds:
   person_iou: 0.45
   # Lowered weapon_conf to improve recall on small/occluded weapons.
   # The paper showed that small weapons at CCTV distance are the main bottleneck.
-  weapon_conf: 0.25  # era 0.15
+  weapon_conf: 0.05   # era 0.25
   weapon_iou: 0.45
   evaluation_iou: 0.50
   image_level_nms_iou: 0.50
@@ -58,15 +58,15 @@ inference:
   default_device: cpu
   person_imgsz: 960
   person_max_det: 50
-  # Increased from 640 → 1280. Weapons in crops are ~30px at 640px (YOLO tiny-
-  # object threshold). At 1280px they become ~60px, well within medium-object
-  # range where YOLO performs ~38% better (per COCO benchmark data).
+  # Set to 1280 to match weapon_crop_detector_1280 training resolution.
+  # Crops resized to 1280px → weapons ~96px (medium-object range, +38% vs tiny).
   weapon_crop_imgsz: 1280
-  enable_hold_gate: true
-  # SAHI (Slicing Aided Hyper Inference) tiling for weapon detection in crops.
-  # Crops are sliced into overlapping tiles; weapon detector runs on each tile;
-  # results are merged back with NMS. Critical for weapons <32px in the crop.
-  sahi_enabled: true
+  # Stage 1 disabled: carry classifier test recall=0.37 at thr=0.72 (val recall=0.83).
+  # Large generalisation gap; re-enable only after carry classifier fine-tuning on test domain.
+  enable_hold_gate: false
+  # SAHI disabled: model was trained at imgsz=640 without tiling. Re-enable only
+  # after retraining weapon_crop_detector at matching tile resolution.
+  sahi_enabled: false
   sahi_tile_size: 320
   sahi_overlap_ratio: 0.30
   # Minimum tile dimension. If the crop is smaller than this, skip tiling.

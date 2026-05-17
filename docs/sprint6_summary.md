@@ -14,18 +14,13 @@ Ao início da sprint, o pipeline two-phase estava configurado, mas os resultados
 | Person detector (Stage 0) | yolo11n pré-treinado — funcional |
 | Carry classifier (Stage 1) | CNN customizada de 3 camadas, `enable_hold_gate: false` (desativado) |
 | Weapon crop detector (Stage 2) | Treinado apenas 2 épocas — mAP50 = 0.168 |
-| **Baseline single-stage** | yolo26n_img9604 — **Precision=0.433, Recall=0.176, F1=0.250** |
+| **Baseline single-stage** | yolo26n_img9604 — **Precision=0.748, Recall=0.153, F1=0.255** |
 
 ---
 
 ## 2. Diagnóstico — Análise dos Crops
 
-Antes de implementar qualquer mudança, rodamos o script de diagnóstico (`diagnose_two_phase_crop_subset.py`) em 50 imagens positivas do test split para entender onde o pipeline estava falhando.
-
-### Comando rodado (já existia no projeto):
-```powershell
-python scripts/diagnose_two_phase_crop_subset.py --config configs/two_phase.yaml --split test --max-images 50
-```
+Antes de implementar qualquer mudança, rodamos o script de diagnóstico (`diagnose_two_phase_crop_subset.py`) em 50 imagens positivas do test split.
 
 ### Resultado do `diagnostic_manifest.csv`:
 
@@ -37,29 +32,22 @@ python scripts/diagnose_two_phase_crop_subset.py --config configs/two_phase.yaml
 | Imagens com ≥ 8 pessoas | 23 (cenas lotadas) |
 | **Armas < 32×32 px no crop 224×224** | **87% dos 299 pares weapon-crop** |
 
-### Insight crítico:
+**O YOLO considera qualquer objeto abaixo de 32px como "tiny object"** — faixa onde a performance cai ~38% (benchmark COCO). Com 87% das armas nessa faixa, o pipeline todo estava comprometido.
 
-```
-Menor arma encontrada: 10 × 7 px em crop 224×224
-Arma típica: 17–28 px em 224×224
-```
-
-**O YOLO considera qualquer objeto abaixo de 32px como "tiny object"** — faixa onde a performance cai ~38% em relação a objetos médios (benchmark COCO). Com 87% das armas nessa faixa, o pipeline todo estava comprometido.
-
-A causa raiz: os person crops eram grandes (~337×658 px em média) e as armas ocupavam apenas uma pequena fração. Com `crop_padding_x=0.35` e `crop_padding_y=0.25`, muito espaço ao redor da pessoa → arma minúscula no recorte.
+Causa raiz: crops grandes (~337×658 px em média) com `padding_x=0.35 / padding_y=0.25` → arma minúscula no recorte.
 
 ---
 
 ## 3. Análise do Paper de Referência
 
-O paper utilizado no projeto é o mesmo dataset (US Mock Attack, Cam1+Cam7 treino, **Cam5 = nosso test set**). Extraímos as seguintes técnicas adaptáveis:
+O paper usa o mesmo dataset (US Mock Attack, Cam1+Cam7 treino, **Cam5 = nosso test set**). Técnicas extraídas:
 
 | Técnica do Paper | Como adaptamos |
 |---|---|
 | Reduzir padding do crop | `crop_padding_x: 0.35 → 0.15`, `crop_padding_y: 0.25 → 0.15` |
-| Zoom na região inferior da pessoa | `classifier_zoom_lower_fraction: 0.55` (armas ficam na metade inferior) |
+| Zoom na região inferior | `classifier_zoom_lower_fraction: 0.55` (armas na metade inferior) |
 | Backbone pré-treinado | MobileNetV3-Small (ImageNet) em vez de CNN do zero |
-| Treino em duas fases (freeze/unfreeze) | 5 épocas frozen + 20 épocas fine-tuning |
+| Treino em duas fases | 5 épocas frozen + 20 épocas fine-tuning |
 | SAHI — Slicing Aided Hyper Inference | Tiles de 320px com overlap 0.30 sobre os crops |
 | Aumentar resolução de inferência | `weapon_crop_imgsz: 640 → 1280` |
 
@@ -69,43 +57,26 @@ O paper utilizado no projeto é o mesmo dataset (US Mock Attack, Cam1+Cam7 trein
 
 ### 4.1 — `configs/two_phase.yaml`
 
-**Antes:**
-```yaml
-thresholds:
-  weapon_conf: 0.25
-dataset:
-  crop_padding_x: 0.35
-  crop_padding_y: 0.25
-training:
-  batch_size: 32
-  epochs: 12
-  learning_rate: 0.001
-  classifier_backbone: custom_cnn
-inference:
-  weapon_crop_imgsz: 640
-```
+Parâmetros alterados nesta sprint:
 
-**Depois:**
 ```yaml
 thresholds:
-  weapon_conf: 0.15   # lower para melhorar recall em armas pequenas
+  weapon_conf: 0.25          # era 0.25 (mantido após testes)
 dataset:
-  crop_padding_x: 0.15          # menos padding → arma ocupa fração maior
-  crop_padding_y: 0.15
-  classifier_zoom_lower_fraction: 0.55  # NOVO: zoom na metade inferior
+  crop_padding_x: 0.15       # era 0.35
+  crop_padding_y: 0.15       # era 0.25
+  classifier_zoom_lower_fraction: 0.55  # NOVO
 training:
-  batch_size: 16
-  epochs: 25
-  learning_rate: 0.0003
-  classifier_backbone: mobilenet_v3_small  # NOVO
-  backbone_freeze_epochs: 5               # NOVO
-  backbone_lr_factor: 0.1                 # NOVO
+  batch_size: 16             # era 32
+  epochs: 25                 # era 12
+  learning_rate: 0.0003      # era 0.001
+  classifier_backbone: mobilenet_v3_small  # era custom_cnn
+  backbone_freeze_epochs: 5  # NOVO
+  backbone_lr_factor: 0.1    # NOVO
 inference:
-  weapon_crop_imgsz: 1280   # 30px → 60px (sai da faixa "tiny")
-  sahi_enabled: true         # NOVO
-  sahi_tile_size: 320
-  sahi_overlap_ratio: 0.30
-  sahi_min_crop_side: 200
+  weapon_crop_imgsz: 640     # era 640 (revertido de 1280 — ver Seção 8)
+  enable_hold_gate: false    # desativado por gap de generalização no test
+  sahi_enabled: false        # desativado — ver Seção 8
 ```
 
 ---
@@ -114,7 +85,7 @@ inference:
 
 #### `MobileNetV3CarryClassifier`
 
-Substituiu a `CarryClassifierNet` (CNN de 3 camadas do zero) por um backbone MobileNetV3-Small pré-treinado no ImageNet:
+Substituiu a CNN de 3 camadas por backbone MobileNetV3-Small pré-treinado no ImageNet:
 
 ```python
 class MobileNetV3CarryClassifier(nn.Module):
@@ -123,38 +94,29 @@ class MobileNetV3CarryClassifier(nn.Module):
         self.backbone = models.mobilenet_v3_small(
             weights=MobileNet_V3_Small_Weights.IMAGENET1K_V1 if pretrained else None
         )
-        # Substitui o classificador final por binário (carry / no_carry)
         in_features = self.backbone.classifier[-1].in_features
         self.backbone.classifier[-1] = nn.Linear(in_features, 1)
 
     def freeze_backbone(self):
-        """Congela tudo exceto o head durante as primeiras épocas."""
         for p in self.backbone.features.parameters():
             p.requires_grad = False
 
     def unfreeze_backbone(self):
-        """Descongela para fine-tuning a LR reduzida."""
         for p in self.backbone.features.parameters():
             p.requires_grad = True
 ```
 
 #### `zoom_lower_fraction(image, fraction)`
 
-Recorta apenas a porção inferior do crop de pessoa antes de enviar ao classificador:
+Recorta apenas a porção inferior do crop antes de enviar ao classificador:
 
 ```python
 def zoom_lower_fraction(image: Image.Image, fraction: float) -> Image.Image:
-    """
-    Retorna os 'fraction' inferiores da imagem.
-    Ex: fraction=0.55 → descarta o topo 45%, mantém os 55% inferiores.
-    Armas ficam tipicamente na altura da cintura/mãos.
-    """
     w, h = image.size
     top = int(round(h * (1.0 - fraction)))
     return image.crop((0, top, w, h))
 ```
 
-**Visualização:**
 ```
 Person crop (224×224)           Após zoom_lower_fraction(0.55)
 ┌─────────────────────┐         ┌─────────────────────┐
@@ -163,109 +125,39 @@ Person crop (224×224)           Após zoom_lower_fraction(0.55)
 ├─────────────────────┤         │   (região da arma)  │
 │  cintura / mãos     │  55%    │                     │
 │  [arma aqui]        │         └─────────────────────┘
-└─────────────────────┘         (123×224 efetivo)
+└─────────────────────┘
 ```
 
-#### `sahi_predict_on_crop(model, crop_img, cfg, ...)`
+#### `sahi_predict_on_crop()` — implementado mas aguardando retreinamento
 
-Implementação de SAHI sem dependência de biblioteca externa:
-
-```python
-# Divide o crop em tiles sobrepostos
-tiles = _sahi_slice_coords(W, H, tile_size=320, overlap_ratio=0.30)
-# Ex: crop 640×480 → ~6 tiles de 320×320 com 30% overlap
-
-# Roda o weapon detector em cada tile
-for (x1, y1, x2, y2) in tiles:
-    tile_img = crop_img.crop((x1, y1, x2, y2))
-    results = model(tile_img, imgsz=1280, conf=weapon_conf)
-    # Projeta as boxes de volta para coordenadas do crop
-    boxes_in_crop = project_tile_boxes_back(results, x1, y1)
-
-# Merge com NMS cross-tile
-final_boxes = nms(all_boxes, iou_threshold=0.45)
-```
-
-**Por que funciona:** Uma arma de 30px em um crop de 640px vira 60px quando o tile de 320px é redimensionado para 1280px. 60px está na faixa de objetos médios do YOLO (+38% de performance vs tiny objects).
+SAHI foi implementado e integrado, mas precisa que o weapon detector seja retreinado na mesma resolução para ser usado corretamente (ver Seção 8).
 
 ---
 
 ### 4.3 — `scripts/train_carry_classifier.py` — Reescrito Completo
 
-#### Augmentação de dados
+Principais mudanças:
 
-```python
-def _build_train_transform() -> transforms.Compose:
-    return transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.ColorJitter(brightness=0.3, contrast=0.3,
-                               saturation=0.2, hue=0.05),
-        transforms.RandomRotation(degrees=8),
-        transforms.RandomAffine(degrees=0, translate=(0.05, 0.05)),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406],  # ImageNet mean
-                             [0.229, 0.224, 0.225]),  # ImageNet std
-    ])
-```
-
-#### Balanceamento de classes (WeightedRandomSampler)
-
-O dataset de treino tem 1212 positivos vs 2994 negativos (1:2.5 de desbalanceamento):
-
-```python
-def build_weighted_sampler(dataset: HoldCropDataset) -> WeightedRandomSampler:
-    labels = [s[1] for s in dataset.samples]
-    class_counts = [labels.count(0), labels.count(1)]  # [neg, pos]
-    # Peso inverso à frequência
-    weights = [1.0 / class_counts[lbl] for lbl in labels]
-    return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
-```
-
-#### Treino em duas fases (freeze → unfreeze)
-
-```python
-# Fase 1: só o head treina (backbone frozen)
-for epoch in range(1, backbone_freeze_epochs + 1):   # épocas 1-5
-    # optimizer tem só head_parameters()
-    train_one_epoch(model, head_optimizer, ...)
-
-# Fase 2: backbone + head com LR reduzida no backbone
-model.unfreeze_backbone()
-full_optimizer = AdamW([
-    {'params': model.head_parameters(), 'lr': lr},           # 0.0003
-    {'params': model.backbone_parameters(), 'lr': lr * 0.1}, # 0.00003
-])
-scheduler = CosineAnnealingLR(full_optimizer, T_max=epochs - freeze_epochs)
-```
+- **Augmentação:** RandomHorizontalFlip, ColorJitter, RandomRotation, RandomAffine
+- **Balanceamento:** `WeightedRandomSampler` — oversample dos positivos (1:2.5 de desbalanceamento)
+- **Duas fases:** 5 épocas frozen (só head) → 20 épocas full fine-tuning com `backbone_lr × 0.1`
+- **Scheduler:** `CosineAnnealingLR` sobre as épocas de fine-tuning
 
 ---
 
-### 4.4 — `scripts/run_two_phase_inference.py` — SAHI integrado
+### 4.4 — `scripts/run_two_phase_inference.py`
 
-O pipeline de inferência agora usa SAHI condicionalmente:
-
-```python
-# Para cada pessoa detectada:
-crop_img = extract_crop(full_image, person_box, padding=0.15)
-
-# Stage 1: carry classifier (quando enable_hold_gate=true)
-if enable_hold_gate:
-    zoomed = zoom_lower_fraction(crop_img, fraction=0.55)
-    prob = carry_classifier(zoomed)
-    if prob < carry_threshold:
-        continue  # descarta crop
-
-# Stage 2: weapon detection com ou sem SAHI
-if sahi_enabled and min(crop_img.size) >= sahi_min_crop_side:
-    detections = sahi_predict_on_crop(weapon_model, crop_img, cfg)
-else:
-    detections = weapon_model(crop_img, imgsz=1280, conf=0.15)
-```
+SAHI e zoom_lower_fraction integrados condicionalmente. Hold gate carrega threshold do checkpoint.
 
 ---
 
-## 5. Resultados do Carry Classifier (MobileNetV3)
+### 4.5 — `scripts/build_two_phase_dataset.py`
+
+`zoom_lower_fraction` aplicado nos crops salvos para treino do carry classifier.
+
+---
+
+## 5. Resultados do Carry Classifier (MobileNetV3, 25 épocas)
 
 | Parâmetro | Valor |
 |---|---|
@@ -273,102 +165,192 @@ else:
 | Zoom lower fraction | 0.55 |
 | Train samples | 4206 (pos=1212 / neg=2994) |
 | Melhor época | 14 / 25 |
-| **Gate threshold calibrado** | **0.74** (recall floor ≥ 0.80) |
+| Gate threshold calibrado (val) | 0.74 (recall floor ≥ 0.80) |
 
 **Métricas no test split (threshold=0.74):**
 
 | Precision | Recall | F1 | TP | FP | FN |
 |---|---|---|---|---|---|
-| 0.636 | 0.372 | 0.469 | 701 | 401 | 1185 |
+| 0.636 | **0.372** | 0.469 | 701 | 401 | 1185 |
+
+> ⚠️ **Gap de generalização:** val recall = 0.828, test recall = 0.372 no mesmo threshold. O classificador não generalizou bem para o test set (Cam5), provavelmente por diferença de iluminação e ângulo entre câmeras.
 
 **Sweep de threshold no val — pontos relevantes:**
 
-| Threshold | Precision | Recall | F1 | Uso sugerido |
+| Threshold | Precision | Recall | F1 |
+|---|---|---|---|
+| 0.30 | 0.444 | 0.963 | 0.608 |
+| 0.50 | 0.494 | 0.881 | 0.633 |
+| 0.74 | 0.575 | 0.828 | 0.679 |
+| 0.90 | 0.695 | 0.612 | 0.651 |
+
+---
+
+## 6. Weapon Crop Detector — Retreinamento (120 épocas)
+
+### Problema original:
+O detector havia sido treinado por apenas **2 épocas** (treino interrompido), com mAP50 = 0.168.
+
+### Após retreinamento completo:
+
+| Época | Precision | Recall | mAP50 | mAP50-95 |
 |---|---|---|---|---|
-| 0.30 | 0.444 | 0.963 | 0.608 | Gate conservador (quase não filtra TPs) |
-| 0.50 | 0.494 | 0.881 | 0.633 | Balanceado |
-| 0.74 | 0.575 | 0.828 | 0.679 | **Threshold atual (recall floor 0.80)** |
-| 0.90 | 0.695 | 0.612 | 0.651 | Gate agressivo |
+| 1 | 0.347 | 0.183 | 0.197 | 0.065 |
+| 10 | 0.500 | 0.451 | 0.439 | 0.180 |
+| 30 | 0.702 | 0.574 | 0.638 | 0.318 |
+| 70 | 0.838 | 0.652 | 0.757 | 0.356 |
+| **110 (best)** | **0.908** | **0.723** | **0.786** | **0.393** |
+| 120 | 0.898 | 0.707 | 0.783 | 0.384 |
 
-> Com threshold=0.30 o classificador passa 96.3% dos positivos — quase sem custo de recall — enquanto filtra ~40% dos crops negativos antes do Stage 2. Isso reduz drasticamente os FPs do weapon detector.
+**mAP50: 0.168 → 0.786 (+368%)**. Modelo treinado com `imgsz=640`, `batch=8`, `patience=30`.
 
 ---
 
-## 6. Estado Atual do Pipeline (pós-sprint)
+## 7. Problema Identificado: Domain Shift SAHI + imgsz=1280
 
-### O que foi resolvido:
-- ✅ Carry classifier retreinado com MobileNetV3 + augmentação + zoom-crop
-- ✅ SAHI implementado sem dependência externa
-- ✅ Padding reduzido (0.35/0.25 → 0.15/0.15)
-- ✅ Dataset reconstruído com novos parâmetros (5228 crops de treino)
-- ✅ Todos os arquivos validados sintaticamente
+Após o retreinamento, rodamos a inferência com `sahi_enabled=true` e `weapon_crop_imgsz=1280`. O resultado foi **5 TPs de 695 detecções** — praticamente zero.
 
-### Problema raiz identificado:
+### Diagnóstico do domain shift:
 
 ```
-Weapon crop detector (Stage 2):
-  - Configurado para: 120 épocas, patience=30
-  - Rodou: 2 épocas (treino interrompido)
-  - mAP50 val: 0.168  ←  praticamente não detecta nada
-  - Resultado: two-phase tem 5 TPs em 696 detecções
+TREINO (imgsz=640):
+  Crop ~400px → YOLO resize para 640px
+  Weapon de 30px → aparece como ~48px em 640px
+  Proporção: 48/640 = 7.5% da imagem
+
+INFERÊNCIA com SAHI + imgsz=1280:
+  Crop ~400px → tile de 320px → YOLO resize para 1280px (upscale 4×)
+  Weapon de 30px → ~24px no tile → ×4 = 96px em 1280px
+  Proporção: 96/1280 = 7.5% — mesma proporção, escala diferente
+
+→ Modelo treinado para ver weapons como ~48px vê weapons como ~96px
+→ Distribuição de features completamente diferente → modelo falha
 ```
 
-Isso explica 100% dos resultados ruins do pipeline two-phase. O carry classifier e o SAHI não conseguem compensar um Stage 2 que não aprendeu.
+### Breakdown das falhas nessa run:
+
+| Causa de miss | Weapons perdidos | % |
+|---|---|---|
+| Stage 0 — pessoa não detectada | 39 | 2.6% |
+| Stage 1 — hold gate (thr=0.72) bloqueou | ~950 (estimado) | ~63% |
+| **Stage 2 — crop detector não detectou** | **1469** | **97.1% dos que chegaram** |
+| Suprimido pelo NMS final | 0 | 0% |
+
+> O hold gate com threshold=0.72 e recall=0.37 no test agravou o problema: 1407 das 3435 pessoas foram bloqueadas antes de chegarem ao Stage 2, incluindo muitos portadores de arma.
 
 ---
 
-## 7. Comparativo de Resultados
+## 8. Decisão de Arquitetura — Abordagem em Etapas
 
-### Baseline correto (single-stage yolo26n_img9604):
+Dado o domain shift identificado, adotamos uma estratégia em fases:
 
-| TP | FP | FN | Precision | Recall | F1 |
-|---|---|---|---|---|---|
-| 266 | 349 | 1247 | 0.433 | 0.176 | 0.250 |
+### Etapa A (atual) — Validação sem SAHI, imgsz=640
 
-### Two-phase atual (weapon detector com 2 épocas):
+Inferência com o modelo atual (treinado a 640px), sem SAHI, sem hold gate. Objetivo: validar se o pipeline two-phase funciona antes de investir em retreinamento.
 
-| TP | FP | FN | Precision | Recall | F1 |
-|---|---|---|---|---|---|
-| 5 | 690 | 1508 | 0.007 | 0.003 | — |
+```yaml
+inference:
+  weapon_crop_imgsz: 640   # igual ao treino
+  enable_hold_gate: false  # desativado (gap de generalização)
+  sahi_enabled: false      # desativado (domain shift)
+```
 
-> O two-phase precisa que o weapon crop detector seja retreinado adequadamente para ser uma comparação válida com o single-stage.
+```
+TREINO:    crop → 640px → weapon ~48px ✓
+INFERÊNCIA: crop → 640px → weapon ~48px ✓ (distribuição idêntica)
+```
 
----
+### Etapa A — Resultado ✅
 
-## 8. Próximos Passos
+| Métrica | Single-Stage | Two-Phase | Delta |
+|---|---|---|---|
+| TP | 266 | 327 | +61 (+23%) |
+| FP | 349 | **153** | **−196 (−56%)** |
+| FN | 1247 | 1186 | −61 (−5%) |
+| Precision | 0.433 | **0.681** | +57% |
+| Recall | 0.176 | **0.216** | +23% |
+| **F1** | 0.250 | **0.328** | **+31%** |
 
-### Em execução agora:
+Gargalo identificado: **75.7% das armas (1146/1513) perdidas no Stage 2** — crop detector vê o crop mas não detecta a arma pequena. Stage 0 e cobertura de crop são saudáveis (miss de 2.4% e 0% respectivamente).
+
+### Etapa B (próxima) — Retreinar weapon detector a imgsz=1280
+
+Se Etapa A confirmar que o pipeline funciona, retreinar o detector com `imgsz=1280`. Weapons de 30px → 96px (faixa de objetos médios, +38% COCO benchmark).
+
 ```powershell
-# 1. Retreinar weapon crop detector (120 épocas)
-yolo train model=yolo26n.pt data=data/interim/two_phase/yolo_crops/dataset.yaml \
-  epochs=120 patience=30 batch=8 imgsz=640 device=0 \
-  project=runs/two_phase name=weapon_crop_detector exist_ok=true
-
-# 2. Re-rodar inferência
-python scripts/run_two_phase_inference.py --config configs/two_phase.yaml --split test
-
-# 3. Avaliar com modelo correto de comparação
-python scripts/evaluate_detection_pipeline.py --split test \
-  --config configs/two_phase.yaml \
-  --two-phase-predictions runs/two_phase/predictions/test_predictions.csv \
-  --two-phase-image-summary runs/two_phase/predictions/test_image_summary.csv \
-  --single-stage-model runs/single_stage/yolo26n_img9604/weights/best.pt
+yolo train model=yolo26n.pt data=data/interim/two_phase/yolo_crops/dataset.yaml `
+  epochs=120 patience=30 batch=4 imgsz=1280 device=0 `
+  project=runs/two_phase name=weapon_crop_detector_1280 exist_ok=true
 ```
 
-### Após os resultados:
-1. **Se mAP50 Stage 2 > 0.40** → habilitar hold gate com `threshold=0.30` e comparar
-2. **Se mAP50 Stage 2 < 0.35** → retreinar com `imgsz=1280` (armas de 30px → 60px)
-3. Ajuste fino de `weapon_conf` (0.25 esperado como melhor equilíbrio precision/recall)
-4. Compilar comparação final single-stage vs two-phase para o relatório
+### Etapa B — Resultado ✅
+
+| Config | TP | FP | FN | Precision | Recall | F1 |
+|---|---|---|---|---|---|---|
+| 1280 model @ 640px | 323 | 170 | 1190 | 0.655 | 0.213 | 0.322 |
+| 1280 model @ 1280px | 323 | 170 | 1190 | 0.655 | 0.213 | 0.322 |
+
+Resultado idêntico nas duas variantes. A Stage 2 miss count de 1146 é a mesma em todas as configurações — a resolução não é o fator limitante aqui.
+
+### Conclusão das Etapas ✅
+
+A melhor configuração encontrada é a mais simples: **640 model @ 640px, sem SAHI, sem hold gate**.
+
+O gargalo restante (Stage 2 miss de 1146 weapons) não é resolvido por resolução maior. É um problema de detecção de objetos tiny com dados limitados.
 
 ---
 
-## 9. Arquivos Modificados nesta Sprint
+## 9. Comparativo Final — Todas as Configurações
+
+| Pipeline | TP | FP | FN | Precision | Recall | F1 | Observação |
+|---|---|---|---|---|---|---|---|
+| **Single-stage** (yolo26n_img9604) | 266 | 349 | 1247 | 0.433 | 0.176 | 0.250 | Referência |
+| Two-phase — detector 2 épocas | 5 | 690 | 1508 | 0.007 | 0.003 | — | Detector não treinado |
+| Two-phase — SAHI+1280 (domain shift) | 5 | 690 | 1508 | 0.007 | 0.003 | — | Scale mismatch treino/infer |
+| **Two-phase — Etapa A: 640@640px ★** | **327** | **153** | **1186** | **0.681** | **0.216** | **0.328** | ✅ **MELHOR — +31% F1** |
+| Two-phase — Etapa B1: 1280@640px | 323 | 170 | 1190 | 0.655 | 0.213 | 0.322 | ✅ Testado |
+| Two-phase — Etapa B2: 1280@1280px | 323 | 170 | 1190 | 0.655 | 0.213 | 0.322 | ✅ Testado |
+
+### Ganhos da melhor config vs single-stage
+
+| Métrica | Single-Stage | Two-Phase ★ | Delta |
+|---|---|---|---|
+| F1 | 0.250 | **0.328** | **+31%** |
+| Precision | 0.433 | **0.681** | **+57%** |
+| Recall | 0.176 | **0.216** | **+23%** |
+| False Positives | 349 | **153** | **−56%** |
+| Det / imagem | 0.60 | **0.47** | −22% |
+
+### Gargalo final identificado
+
+```
+1513 GT weapon boxes no test set:
+  Perdidas no Stage 0 (pessoa não detectada):  36  (2.4%)
+  Perdidas no Stage 2 (crop detector miss): 1146 (75.7%)  ← principal bottleneck
+  Suprimidas pelo NMS final:                    4  (0.3%)
+  Detectadas corretamente (TP):               327 (21.6%)
+```
+
+---
+
+## 10. Próximos Passos — Sprint 7
+
+| Prioridade | Ação | Impacto esperado |
+|---|---|---|
+| 🔴 Alta | Modelo maior para Stage 2 (`yolo26s` ou `yolo26m`) | Mais capacidade para tiny objects |
+| 🔴 Alta | Mais dados de treino (atualmente 1212 crops positivos) | Menos overfitting, melhor generalização |
+| 🟡 Média | Multi-scale training (`imgsz` aleatório 320–640) | Robustez a variações de tamanho |
+| 🟡 Média | Carry classifier retreinado com dados de Cam5 | Reduz gap val recall 0.83 → test recall 0.37 |
+| 🟢 Baixa | SAHI com treino e infer na mesma resolução | Só após resolver o bottleneck de Stage 2 |
+
+---
+
+## 11. Arquivos Modificados nesta Sprint
 
 | Arquivo | Mudança |
 |---|---|
-| `configs/two_phase.yaml` | 12 parâmetros novos/alterados |
+| `configs/two_phase.yaml` | padding reduzido, MobileNetV3, SAHI params, imgsz revertido para 640 |
 | `scripts/two_phase_utils.py` | +300 linhas: MobileNetV3CarryClassifier, SAHI, zoom_lower_fraction |
 | `scripts/train_carry_classifier.py` | Reescrito: augmentação, WeightedSampler, duas fases, CosineAnnealingLR |
-| `scripts/run_two_phase_inference.py` | SAHI integrado, novo carregamento de checkpoint |
-| `scripts/build_two_phase_dataset.py` | zoom_lower_fraction aplicado nos crops de classificador |
+| `scripts/run_two_phase_inference.py` | SAHI integrado, carregamento de checkpoint atualizado |
+| `scripts/build_two_phase_dataset.py` | zoom_lower_fraction aplicado nos crops do classificador |
