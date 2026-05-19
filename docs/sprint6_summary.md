@@ -333,19 +333,81 @@ O gargalo restante (Stage 2 miss de 1146 weapons) não é resolvido por resoluç
 
 ---
 
-## 10. Próximos Passos — Sprint 7
+## 10. Sprint Final — Threshold Sweep + yolo26s/yolo26m
 
-| Prioridade | Ação | Impacto esperado |
-|---|---|---|
-| 🔴 Alta | Modelo maior para Stage 2 (`yolo26s` ou `yolo26m`) | Mais capacidade para tiny objects |
-| 🔴 Alta | Mais dados de treino (atualmente 1212 crops positivos) | Menos overfitting, melhor generalização |
-| 🟡 Média | Multi-scale training (`imgsz` aleatório 320–640) | Robustez a variações de tamanho |
-| 🟡 Média | Carry classifier retreinado com dados de Cam5 | Reduz gap val recall 0.83 → test recall 0.37 |
-| 🟢 Baixa | SAHI com treino e infer na mesma resolução | Só após resolver o bottleneck de Stage 2 |
+**Data:** 18 Maio 2026
+
+### 10.1 — Threshold Sweep (`weapon_conf`)
+
+Inferência rodada com `weapon_conf=0.05` para capturar todos os candidatos, depois filtrados post-hoc em 10 thresholds diferentes.
+
+| Threshold | TP | FP | FN | Precision | Recall | F1 |
+|---|---|---|---|---|---|---|
+| 0.05 | — | — | — | — | — | — |
+| **0.10 ⭐** | **445** | **608** | **1068** | **0.423** | **0.294** | **0.347** |
+| 0.25 (anterior) | 327 | 153 | 1186 | 0.681 | 0.216 | 0.328 |
+| 0.40 | — | — | — | — | — | — |
+| 0.60 | — | — | — | — | — | — |
+
+> Resultado completo em `runs/two_phase/evaluation/threshold_sweep.md`
+
+**Conclusão:** `weapon_conf=0.10` é o threshold ótimo. Ao abaixar o threshold, o modelo recupera 118 TPs adicionais (+36%) ao custo de +455 FPs (+297%). O trade-off aumenta recall (+36%) com queda de precision (-38%), resultando em **F1=0.347 (+5.8% vs 0.25 anterior)**.
+
+Comparativo atualizado vs baseline:
+
+| Pipeline | TP | FP | FN | Precision | Recall | F1 | Delta F1 |
+|---|---|---|---|---|---|---|---|
+| Single-stage (yolo26n) | 266 | 349 | 1247 | 0.433 | 0.176 | 0.250 | — |
+| Two-phase yolo26n (thr=0.25) | 327 | 153 | 1186 | 0.681 | 0.216 | 0.328 | +31% |
+| **Two-phase yolo26n (thr=0.10) ★** | **445** | **608** | **1068** | **0.423** | **0.294** | **0.347** | **+38.7%** |
+
+**Config atualizado:** `weapon_conf: 0.10` em `configs/two_phase.yaml`.
 
 ---
 
-## 11. Arquivos Modificados nesta Sprint
+### 10.2 — Treino yolo26s (Small)
+
+| Parâmetro | Valor |
+|---|---|
+| Modelo base | `yolo26s.pt` |
+| Épocas treinadas | 103 (early stop patience=30) |
+| Melhor época | 71 |
+| `mAP50` (val) | **0.8129** |
+| `mAP50-95` (val) | 0.3777 |
+| Precision (val) | 0.8335 |
+| Recall (val) | 0.7325 |
+| Pesos salvos | `runs/two_phase/weapon_crop_detector_small/weights/best.pt` |
+
+> Avaliação no test set (Cam5) ainda pendente — será gerada pelo script overnight.
+
+---
+
+### 10.3 — Treino yolo26m (Medium)
+
+**Status:** Interrompido manualmente após 4 épocas (`mAP50=0.085` — inutilizável). Será retreinado do zero no próximo run overnight.
+
+| Parâmetro | Valor |
+|---|---|
+| Modelo base | `yolo26m.pt` |
+| Épocas treinadas | 4 (interrompido) |
+| Status | ⏳ Pendente — retreinar esta noite |
+
+---
+
+## 11. Próximos Passos
+
+| Prioridade | Ação | Status |
+|---|---|---|
+| 🔴 | Avaliar yolo26s no test set | ⏳ Esta noite |
+| 🔴 | Retreinar + avaliar yolo26m | ⏳ Esta noite |
+| 🔴 | Mais dados de treino (atualmente 1212 crops positivos) | Futuro |
+| 🟡 | Multi-scale training (`imgsz` aleatório 320–640) | Futuro |
+| 🟡 | Carry classifier retreinado com dados de Cam5 | Futuro |
+| 🟢 | SAHI com treino e infer na mesma resolução | Só após resolver bottleneck Stage 2 |
+
+---
+
+## 12. Arquivos Modificados nesta Sprint
 
 | Arquivo | Mudança |
 |---|---|
